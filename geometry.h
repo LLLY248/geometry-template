@@ -381,4 +381,371 @@ inline std::vector<Vec2> grahamScan(const std::vector<Vec2>& pts) {
     return hull;
 }
 
+// =============================================================================
+//  geometry.h  —  Part 4 ~ Part 7
+//  接在 Part 0-3 之后，粘贴到 geometry.h 末尾的 } // namespace Geo 之前
+//
+//  更新记录：
+//  2026-03  Part 4: Triangle3D
+//  2026-03  Part 5: HalfEdge 半边数据结构
+//  2026-03  Part 6: 点定位（点在哪个三角形内）
+//  2026-03  Part 7: Delaunay 三角剖分（框架，待填充）
+// =============================================================================
+
+
+// =============================================================================
+//  Part 4 : Triangle3D — 三维三角形
+//
+//  重要原则：所有几何运算用边向量 (B-A), (C-A)，不用裸顶点坐标
+// =============================================================================
+
+struct Triangle3D {
+    Vec3 a, b, c;   // 三个顶点，建议逆时针朝向正面
+
+    // ---------- 构造 ----------
+    Triangle3D() {}
+    Triangle3D(const Vec3& a, const Vec3& b, const Vec3& c) : a(a), b(b), c(c) {}
+
+    // ---------- 基本属性 ----------
+
+    // 两条边向量（从顶点 a 出发）
+    // 记住：几何计算永远用边向量，不是顶点坐标本身
+    Vec3 edge_ab() const { return b - a; }
+    Vec3 edge_ac() const { return c - a; }
+
+    // 未归一化法向量（叉积，长度 = 2 * 面积）
+    Vec3 rawNormal() const { return edge_ab().cross(edge_ac()); }
+
+    // 面积 = 两边向量叉积长度的一半
+    float area() const { return rawNormal().length() * 0.5f; }
+
+    // 单位法向量
+    Vec3 normal() const { return rawNormal().normalized(); }
+
+    // 重心 = 三顶点坐标平均值
+    Vec3 centroid() const { return (a + b + c) * (1.0f / 3.0f); }
+
+    // ---------- 点与平面的关系 ----------
+
+    // 点 P 到三角形所在平面的有符号距离
+    // 正值 → P 在法向量正面一侧
+    // 负值 → P 在法向量背面一侧
+    float signedDistToPlane(const Vec3& P) const {
+        Vec3 n = rawNormal();
+        float len = n.length();
+        if (len < EPS) return 0;
+        return n.dot(P - a) / len;
+    }
+
+    // 判断点 P 是否在三角形所在平面内（给定误差 eps）
+    bool pointOnPlane(const Vec3& P, float eps = 1e-5f) const {
+        return std::abs(signedDistToPlane(P)) < eps;
+    }
+
+    // ---------- 点在三角形内的判断（3D）----------
+
+    // 用重心坐标法判断点 P 是否在三角形内（含边界）
+    // 前提：P 已经在三角形所在平面上（可先用 pointOnPlane 检查）
+    // 返回：是否在三角形内，同时输出重心坐标 (u, v)，w = 1 - u - v
+    bool inTriangle(const Vec3& P, float& u, float& v) const {
+        Vec3 v0 = edge_ac();
+        Vec3 v1 = edge_ab();
+        Vec3 v2 = P - a;
+
+        float dot00 = v0.dot(v0);
+        float dot01 = v0.dot(v1);
+        float dot02 = v0.dot(v2);
+        float dot11 = v1.dot(v1);
+        float dot12 = v1.dot(v2);
+
+        float denom = dot00 * dot11 - dot01 * dot01;
+        if (std::abs(denom) < EPS) return false;   // 退化三角形
+
+        float inv = 1.0f / denom;
+        u = (dot11 * dot02 - dot01 * dot12) * inv;
+        v = (dot00 * dot12 - dot01 * dot02) * inv;
+
+        return (u >= -EPS) && (v >= -EPS) && (u + v <= 1.0f + EPS);
+    }
+
+    // 不需要重心坐标时的简化版
+    bool inTriangle(const Vec3& P) const {
+        float u, v;
+        return inTriangle(P, u, v);
+    }
+
+    // ---------- 光线与三角形求交（Möller–Trumbore 算法）----------
+    // 用途：射线检测、碰撞检测，游戏/渲染引擎常用
+    // 输入：光线起点 orig，方向 dir（不需要归一化）
+    // 输出：t（交点在光线上的参数），u、v（重心坐标）
+    // 返回：是否相交（t > 0 表示正方向相交）
+    bool rayIntersect(const Vec3& orig, const Vec3& dir,
+        float& t, float& u, float& v) const {
+        Vec3 ab = edge_ab();
+        Vec3 ac = edge_ac();
+        Vec3 h = dir.cross(ac);
+        float det = ab.dot(h);
+
+        if (std::abs(det) < EPS) return false;   // 光线平行于三角形
+
+        float inv_det = 1.0f / det;
+        Vec3 s = orig - a;
+        u = s.dot(h) * inv_det;
+        if (u < 0 || u > 1) return false;
+
+        Vec3 q = s.cross(ab);
+        v = dir.dot(q) * inv_det;
+        if (v < 0 || u + v > 1) return false;
+
+        t = ac.dot(q) * inv_det;
+        return t > EPS;   // t > 0 才是正方向上的交点
+    }
+};
+
+
+// =============================================================================
+//  Part 5 : HalfEdge — 半边数据结构
+//
+//  半边结构是网格算法的核心，用于高效查询网格拓扑关系
+//
+//  核心概念：
+//    每条边拆成两条方向相反的半边（half-edge）
+//    三角形的三条半边按逆时针顺序排列
+//
+//  半边的三个关键指针：
+//    next  → 同一三角形内的下一条半边（逆时针）
+//    twin  → 对面的半边（相邻三角形的对应半边）
+//    vert  → 该半边的起点顶点索引
+//
+//  示意：
+//    三角形 [v0, v1, v2]
+//    半边 he0: v0→v1,  next=he1, twin=对面三角形的某条半边
+//    半边 he1: v1→v2,  next=he2
+//    半边 he2: v2→v0,  next=he0
+// =============================================================================
+
+struct HalfEdge {
+    int next = -1;   // 同面的下一条半边索引
+    int twin = -1;   // 对面的半边索引（-1 表示边界边，没有相邻三角形）
+    int vert = -1;   // 起点顶点索引
+    int face = -1;   // 所属三角形索引（-1 表示边界虚半边）
+};
+
+// 半边网格（存储顶点 + 半边 + 面）
+struct HalfEdgeMesh {
+    std::vector<Vec3>     verts;      // 顶点坐标
+    std::vector<HalfEdge> halfedges;  // 半边数组
+    std::vector<int>      faceHE;     // 每个面的任意一条半边索引
+    std::vector<int>      vertHE;     // 每个顶点的任意一条出边索引
+
+    // ---------- 构建 ----------
+
+    // 从三角形列表构建半边结构
+    // tris[i] = {v0, v1, v2}，顶点逆时针排列
+    void build(const std::vector<Vec3>& vertices,
+        const std::vector<std::array<int, 3>>& tris) {
+        verts = vertices;
+        int nv = (int)vertices.size();
+        int nf = (int)tris.size();
+
+        halfedges.clear();
+        faceHE.resize(nf, -1);
+        vertHE.resize(nv, -1);
+
+        // 每个三角形生成 3 条半边
+        halfedges.resize(nf * 3);
+        for (int f = 0; f < nf; f++) {
+            for (int i = 0; i < 3; i++) {
+                int he_idx = f * 3 + i;
+                halfedges[he_idx].vert = tris[f][i];
+                halfedges[he_idx].next = f * 3 + (i + 1) % 3;
+                halfedges[he_idx].face = f;
+                halfedges[he_idx].twin = -1;   // 先全部设为边界
+            }
+            faceHE[f] = f * 3;
+        }
+
+        // 建立顶点出边
+        for (int he = 0; he < (int)halfedges.size(); he++)
+            vertHE[halfedges[he].vert] = he;
+
+        // 建立 twin 关系
+        // 用 map 匹配：边 (a→b) 的 twin 是 (b→a)
+        std::map<std::pair<int, int>, int> edgeMap;
+        for (int he = 0; he < (int)halfedges.size(); he++) {
+            int v0 = halfedges[he].vert;
+            int v1 = halfedges[halfedges[he].next].vert;
+            edgeMap[{v0, v1}] = he;
+        }
+        for (int he = 0; he < (int)halfedges.size(); he++) {
+            int v0 = halfedges[he].vert;
+            int v1 = halfedges[halfedges[he].next].vert;
+            auto it = edgeMap.find({ v1, v0 });
+            if (it != edgeMap.end())
+                halfedges[he].twin = it->second;
+        }
+    }
+
+    // ---------- 拓扑查询 ----------
+
+    // 查询顶点 v 的所有相邻顶点（一环邻域）
+    std::vector<int> neighborVerts(int v) const {
+        std::vector<int> result;
+        int start = vertHE[v];
+        if (start == -1) return result;
+        int he = start;
+        do {
+            // 当前半边 he 的终点就是相邻顶点
+            result.push_back(halfedges[halfedges[he].next].vert);
+            // 前进：twin → next 得到下一条出边
+            int tw = halfedges[he].twin;
+            if (tw == -1) break;   // 边界顶点，循环中断
+            he = halfedges[tw].next;
+        } while (he != start);
+        return result;
+    }
+
+    // 查询顶点 v 的所有相邻三角形（一环面邻域）
+    std::vector<int> neighborFaces(int v) const {
+        std::vector<int> result;
+        int start = vertHE[v];
+        if (start == -1) return result;
+        int he = start;
+        do {
+            if (halfedges[he].face != -1)
+                result.push_back(halfedges[he].face);
+            int tw = halfedges[he].twin;
+            if (tw == -1) break;
+            he = halfedges[tw].next;
+        } while (he != start);
+        return result;
+    }
+
+    // 判断顶点 v 是否在边界上（有半边的 twin == -1）
+    bool isBoundaryVert(int v) const {
+        int start = vertHE[v];
+        if (start == -1) return true;
+        int he = start;
+        do {
+            if (halfedges[he].twin == -1) return true;
+            he = halfedges[halfedges[he].twin].next;
+        } while (he != start);
+        return false;
+    }
+
+    // 三角形的三个顶点索引
+    std::array<int, 3> faceVerts(int f) const {
+        int he = faceHE[f];
+        return {
+            halfedges[he].vert,
+            halfedges[halfedges[he].next].vert,
+            halfedges[halfedges[halfedges[he].next].next].vert
+        };
+    }
+};
+
+
+// =============================================================================
+//  Part 6 : 点定位（Point Location）
+//
+//  给定一个三角网格和一个查询点 P，找出 P 在哪个三角形内
+//  这是 Delaunay 增量插入算法的核心操作
+// =============================================================================
+
+// 线性扫描点定位（简单版，O(n)）
+// 适合网格规模较小时使用
+// 返回三角形索引，-1 表示点在网格外
+inline int locatePoint_linear(
+    const std::vector<Vec2>& verts,
+    const std::vector<std::array<int, 3>>& tris,
+    const Vec2& P)
+{
+    for (int i = 0; i < (int)tris.size(); i++) {
+        const Vec2& A = verts[tris[i][0]];
+        const Vec2& B = verts[tris[i][1]];
+        const Vec2& C = verts[tris[i][2]];
+        if (inTriangle(A, B, C, P)) return i;
+    }
+    return -1;
+}
+
+// 跳步点定位（Walk，O(sqrt(n)) 平均）
+// 从一个起始三角形出发，每步朝 P 所在方向跳到相邻三角形
+// 适合 Delaunay 插入时使用（通常从上次插入的三角形出发）
+// 需要 HalfEdgeMesh 提供拓扑信息
+inline int locatePoint_walk(
+    const std::vector<Vec2>& verts,
+    const HalfEdgeMesh& mesh,
+    const std::vector<std::array<int, 3>>& tris,
+    const Vec2& P,
+    int startFace = 0)
+{
+    int f = startFace;
+    int maxIter = (int)tris.size() + 10;   // 防止死循环
+
+    for (int iter = 0; iter < maxIter; iter++) {
+        auto [v0, v1, v2] = mesh.faceVerts(f);
+        const Vec2& A = verts[v0];
+        const Vec2& B = verts[v1];
+        const Vec2& C = verts[v2];
+
+        // 检查 P 是否在当前三角形内
+        if (inTriangle(A, B, C, P)) return f;
+
+        // 找到 P 在哪条边的外侧，跳到对面三角形
+        int he = mesh.faceHE[f];
+        bool jumped = false;
+        for (int i = 0; i < 3; i++) {
+            int va = mesh.halfedges[he].vert;
+            int vb = mesh.halfedges[mesh.halfedges[he].next].vert;
+            // P 在边 va→vb 的右侧，说明要往这个方向走
+            if (cross2D(verts[va], verts[vb], P) < -EPS) {
+                int tw = mesh.halfedges[he].twin;
+                if (tw == -1) return -1;   // 边界，P 在网格外
+                f = mesh.halfedges[tw].face;
+                jumped = true;
+                break;
+            }
+            he = mesh.halfedges[he].next;
+        }
+        if (!jumped) return f;   // 没有需要跳的边，就在当前三角形内
+    }
+    return -1;   // 超出迭代次数
+}
+
+
+// =============================================================================
+//  Part 7 : Delaunay 三角剖分（框架）
+//
+//  待实现：增量插入 Delaunay 三角剖分
+//  核心步骤：
+//    1. 构造超级三角形（包含所有点）
+//    2. 逐点插入：
+//       a. 点定位（Part 6 的 locatePoint）
+//       b. 分裂三角形（1 分 3）
+//       c. 合法化边（Lawson flip，用 inCircumcircle 检验）
+//    3. 删除超级三角形的顶点和相关三角形
+//
+//  依赖的已实现函数（Part 3）：
+//    inCircumcircle()  ← Delaunay 合法性判断的核心
+//    cross2D()         ← 方向判断
+//
+//  TODO：等第二阶段学习后逐步填充
+// =============================================================================
+
+// 占位：Delaunay 网格结构（后续扩展）
+struct DelaunayMesh {
+    std::vector<Vec2>            verts;    // 顶点
+    std::vector<std::array<int, 3>> tris;  // 三角形（顶点索引，逆时针）
+    HalfEdgeMesh                 topo;    // 拓扑结构
+
+    // TODO: 插入点
+    // void insertPoint(const Vec2& P) { ... }
+
+    // TODO: 合法化边（Lawson flip）
+    // void legalizeEdge(int he) { ... }
+
+    // TODO: 从点集构建完整 Delaunay
+    // void build(const std::vector<Vec2>& points) { ... }
+};
 }   // namespace Geo
