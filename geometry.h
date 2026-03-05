@@ -2,7 +2,9 @@
 #include <cmath>
 #include <cassert>
 #include <vector>
+#include <array>
 #include <algorithm>
+#include <map>
 
 // =============================================================================
 //  geometry.h  —  Personal C++ Geometry Template
@@ -12,6 +14,10 @@
 //
 //  更新记录：
 //  2026-03  Part 0-3: 常量、Vec2、Vec3、基本几何判断
+//  2026-03  Part 4:   Triangle3D
+//  2026-03  Part 5:   HalfEdge 半边数据结构
+//  2026-03  Part 6:   点定位
+//  2026-03  Part 7:   Delaunay 框架（待填充）
 // =============================================================================
 
 
@@ -279,14 +285,60 @@ inline Vec2 circumcenter(const Vec2& A, const Vec2& B, const Vec2& C) {
 // 原理：计算 3×3 行列式，正值表示 P 在外接圆内
 // 前提：A、B、C 按逆时针顺序排列（否则结果取反）
 inline bool inCircumcircle(const Vec2& A, const Vec2& B, const Vec2& C, const Vec2& P) {
-    float ax = A.x - P.x, ay = A.y - P.y;
+    float ax = A.x - P.x, ay = A.y - P.y;       // 点 P 平移到了原点 (0,0)
     float bx = B.x - P.x, by = B.y - P.y;
     float cx = C.x - P.x, cy = C.y - P.y;
     float det = ax * (by * (cx * cx + cy * cy) - cy * (bx * bx + by * by))
         - ay * (bx * (cx * cx + cy * cy) - cx * (bx * bx + by * by))
-        + (ax * ax + ay * ay) * (bx * cy - by * cx);
-    return det > EPS;
+        + (ax * ax + ay * ay) * (bx * cy - by * cx);        // 计算由向量 OA', OB', OC' 构成的平行六面体的体积
+    return det > EPS;       // 如果 det > 0，说明 P' 落在平面下方（对应圆内）
 }
+
+
+// -----------------------------------------------------------------------------
+//  3.3b Triangle2D — 二维三角形（对象封装版）
+//
+//  和 Part 4 的 Triangle3D 对称，提供一致的调用方式
+//  散点函数（triangleArea/inTriangle 等）仍然保留，Delaunay 算法里更常用
+// -----------------------------------------------------------------------------
+
+struct Triangle2D {
+    Vec2 a, b, c;   // 三个顶点，建议逆时针排列
+
+    // ---------- 构造 ----------
+    Triangle2D() {}
+    Triangle2D(const Vec2& a, const Vec2& b, const Vec2& c) : a(a), b(b), c(c) {}
+
+    // ---------- 基本属性 ----------
+
+    // 边向量（从顶点 a 出发）
+    Vec2 edge_ab() const { return b - a; }
+    Vec2 edge_ac() const { return c - a; }
+
+    // 有符号面积（逆时针为正）
+    float signedArea() const { return triangleSignedArea(a, b, c); }
+
+    // 面积（始终为正）
+    float area() const { return triangleArea(a, b, c); }
+
+    // 重心
+    Vec2 centroid() const { return (a + b + c) * (1.0f / 3.0f); }
+
+    // 外接圆圆心
+    Vec2 circumcenter() const { return Geo::circumcenter(a, b, c); }
+
+    // ---------- 判断 ----------
+
+    // 判断点 P 是否在三角形内（含边界）
+    bool contains(const Vec2& P) const { return Geo::inTriangle(a, b, c, P); }
+
+    // 判断点 P 是否在外接圆内
+    bool inCircumcircle(const Vec2& P) const { return Geo::inCircumcircle(a, b, c, P); }
+
+    // 顶点是否逆时针排列
+    bool isCCW() const { return signedArea() > EPS; }
+};
+
 
 // -----------------------------------------------------------------------------
 //  3.4  多边形（2D）
@@ -380,17 +432,6 @@ inline std::vector<Vec2> grahamScan(const std::vector<Vec2>& pts) {
     }
     return hull;
 }
-
-// =============================================================================
-//  geometry.h  —  Part 4 ~ Part 7
-//  接在 Part 0-3 之后，粘贴到 geometry.h 末尾的 } // namespace Geo 之前
-//
-//  更新记录：
-//  2026-03  Part 4: Triangle3D
-//  2026-03  Part 5: HalfEdge 半边数据结构
-//  2026-03  Part 6: 点定位（点在哪个三角形内）
-//  2026-03  Part 7: Delaunay 三角剖分（框架，待填充）
-// =============================================================================
 
 
 // =============================================================================
