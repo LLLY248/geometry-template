@@ -280,18 +280,50 @@ inline Vec2 circumcenter(const Vec2& A, const Vec2& B, const Vec2& C) {
     return { A.x + ux, A.y + uy };
 }
 
-// 判断点 P 是否在三角形 ABC 的外接圆内（严格内部）
-// 用途：Delaunay 合法性检验（inCircle 判断）
-// 原理：计算 3×3 行列式，正值表示 P 在外接圆内
-// 前提：A、B、C 按逆时针顺序排列（否则结果取反）
+// 判断点 P 是否在三角形 ABC 的外接圆内（严格内部返回 true，圆上返回 false）
+//
+// 原理：将 A、B、C 平移使 P 成为原点，构造如下 3×3 行列式：
+//   | ax  ay  ax²+ay² |
+//   | bx  by  bx²+by² |
+//   | cx  cy  cx²+cy² |
+// 等价于把三点提升到抛物面 z=x²+y² 后判断四面体方向：
+//   det > 0  →  A B C 逆时针排列时，P 在外接圆内
+//   det < 0  →  P 在外接圆外
+//   det ≈ 0  →  四点共圆（退化情况）
+//
+// 前提：A B C 必须按逆时针排列，否则 det 符号取反
+// 用途：Delaunay 合法性检验（Lawson flip 的判断依据）
 inline bool inCircumcircle(const Vec2& A, const Vec2& B, const Vec2& C, const Vec2& P) {
-    float ax = A.x - P.x, ay = A.y - P.y;       // 点 P 平移到了原点 (0,0)
-    float bx = B.x - P.x, by = B.y - P.y;
-    float cx = C.x - P.x, cy = C.y - P.y;
-    float det = ax * (by * (cx * cx + cy * cy) - cy * (bx * bx + by * by))
-        - ay * (bx * (cx * cx + cy * cy) - cx * (bx * bx + by * by))
-        + (ax * ax + ay * ay) * (bx * cy - by * cx);        // 计算由向量 OA', OB', OC' 构成的平行六面体的体积
-    return det > EPS;       // 如果 det > 0，说明 P' 落在平面下方（对应圆内）
+    // 退化情况：三点共线，外接圆不存在，直接返回 false
+    float area2 = cross2D(A, B, C);
+    if (isZero(area2)) return false;
+
+    // 如果顶点是顺时针排列，交换 B C 使其变为逆时针
+    // 保证 det 的符号含义一致
+    const Vec2* a = &A;
+    const Vec2* b = &B;
+    const Vec2* c = &C;
+    if (area2 < 0) std::swap(b, c);
+
+    // 平移：以 P 为原点，A B C 坐标相应减去 P
+    float ax = a->x - P.x, ay = a->y - P.y;
+    float bx = b->x - P.x, by = b->y - P.y;
+    float cx = c->x - P.x, cy = c->y - P.y;
+
+    // 各点到 P 的距离平方（提升到抛物面的 z 坐标）
+    float ar2 = ax * ax + ay * ay;
+    float br2 = bx * bx + by * by;
+    float cr2 = cx * cx + cy * cy;
+
+    // 3×3 行列式展开（按第三列余子式）
+    float det = ax * (by * cr2 - cy * br2)
+        - ay * (bx * cr2 - cx * br2)
+        + ar2 * (bx * cy - by * cx);
+
+    // 四点共圆时视为在圆外（不触发 flip），避免数值振荡
+    if (isZero(det)) return false;
+
+    return det > 0;       // 如果 det > 0，说明 P' 落在平面下方（对应圆内）
 }
 
 
@@ -757,36 +789,169 @@ inline int locatePoint_walk(
 
 // =============================================================================
 //  Part 7 : Delaunay 三角剖分（框架）
-//
-//  待实现：增量插入 Delaunay 三角剖分
-//  核心步骤：
-//    1. 构造超级三角形（包含所有点）
-//    2. 逐点插入：
-//       a. 点定位（Part 6 的 locatePoint）
-//       b. 分裂三角形（1 分 3）
-//       c. 合法化边（Lawson flip，用 inCircumcircle 检验）
-//    3. 删除超级三角形的顶点和相关三角形
-//
-//  依赖的已实现函数（Part 3）：
-//    inCircumcircle()  ← Delaunay 合法性判断的核心
-//    cross2D()         ← 方向判断
-//
-//  TODO：等第二阶段学习后逐步填充
 // =============================================================================
 
-// 占位：Delaunay 网格结构（后续扩展）
+// 占位：Delaunay 网格结构
 struct DelaunayMesh {
     std::vector<Vec2>            verts;    // 顶点
     std::vector<std::array<int, 3>> tris;  // 三角形（顶点索引，逆时针）
     HalfEdgeMesh                 topo;    // 拓扑结构
 
-    // TODO: 插入点
-    // void insertPoint(const Vec2& P) { ... }
+    // -----------------------------------------------------------------------
+    // 构造超级三角形，包含所有输入点
+    // 返回超级三角形的三个顶点（不加入 verts，由 build 统一管理）
+    // -----------------------------------------------------------------------
+    Triangle2D creatSuperTriangle(const std::vector<Vec2>& points) {
 
-    // TODO: 合法化边（Lawson flip）
-    // void legalizeEdge(int he) { ... }
+        float x_min = points[0].x; float x_max = points[0].x; float y_min = points[0].y; float y_max = points[0].y;
 
-    // TODO: 从点集构建完整 Delaunay
-    // void build(const std::vector<Vec2>& points) { ... }
-};
+        for (const auto& p : points) {
+            if (p.x < x_min) x_min = p.x;
+            if (p.x > x_max) x_max = p.x;
+            if (p.y < y_min) y_min = p.y;
+            if (p.y > y_max) y_max = p.y;
+        }
+
+        float x_mid = (x_min + x_max) * 0.5;
+        float y_mid = (y_min + y_max) * 0.5;
+        float delta = std::max(x_max - x_min, y_max - y_min) * 3.0f;
+        
+        Vec2 v0 = { x_mid - delta,  y_mid - delta };
+        Vec2 v1 = { x_mid + delta,  y_mid - delta };
+        Vec2 v2 = { x_mid,          y_mid + delta };
+
+        return Triangle2D(v0, v1, v2);
+    }
+
+    // -----------------------------------------------------------------------
+    // 线性扫描点定位：返回包含点 p 的三角形索引，-1 表示未找到
+    // -----------------------------------------------------------------------
+    int locatePoint(const Vec2D& p) {
+        for (int i = 0; i < (int)tris.size(); ++i) {
+            const Vec2& A = verts[tris[i][0]];
+            const Vec2& B = verts[tris[i][1]];
+            const Vec2& C = verts[tris[i][2]];
+            if (Geo::inTriangle(A, B, C, p)) return i;
+        }
+
+        return -1;
+    }
+
+    // -----------------------------------------------------------------------
+    // 找到外接圆包含点 p 的所有三角形索引（空腔 cavity）
+    // 原理：Bowyer-Watson 算法的核心步骤
+    // -----------------------------------------------------------------------
+    std::vector<int> findCavity(const Vec2& p) {
+        std::vector<int> cavity;
+        for (int i = 0; i < (int)tris.size(); ++i) {
+            const Vec2& A = verts[tris[i][0]];
+            const Vec2& B = verts[tris[i][1]];
+            const Vec2& C = verts[tris[i][2]];
+            if (Geo::inCircumcircle(A, B, C, p))
+                cavity.push_back(i);
+        }
+
+        return cavity;
+    }
+
+    // -----------------------------------------------------------------------
+    // 找到 cavity 的边界边
+    // 边界边定义：只属于一个 cavity 三角形的边（另一侧不在 cavity 内）
+    // 返回：每条边界边用 {顶点索引A, 顶点索引B} 表示
+    // -----------------------------------------------------------------------
+    std::vector<std::array<int, 2>> findBoundaryEdges(const std::vector<int>& cavity) {
+
+        // 统计 cavity 内每条边出现的次数
+        // 出现1次 = 边界边；出现2次 = 内部边（两侧都在 cavity 内，需删除）
+        std::map<std::array<int, 2>, int> edgeCount;
+
+        for (int fi : cavity) {
+            for (int i = 0; i < 3; ++i) {
+                int va = tris[fi][i];
+                int vb = tris[fi][(i + 1) % 3];
+                // 统一边的方向（小索引在前），避免 {a,b} 和 {b,a} 被当作不同边
+                std::array<int, 2> edge = { std::min(va, vb), std::max(abort,b) };
+                edgeCount[edge]++;
+            }
+        }
+
+        std::vector<std::array<int, 2>> boundary;
+        for (auto& [edge, cnt] : edgeCount) {
+            if (cnt == 1) boundary.push_back(edge);
+        }
+
+        return boundary;
+    }
+    
+    // -----------------------------------------------------------------------
+    // 插入新点 P：Bowyer-Watson 算法
+    // 步骤：① 找空腔  ② 删除空腔三角形  ③ 用边界边和新点构成新三角形
+    // -----------------------------------------------------------------------
+    void insertPoint(const Vec2& P) {
+        // Step 1: 找到所有外接圆包含 P 的三角形（空腔）
+        std::vector<int> cavity = findCavity(P);
+        if (cavity.empty()) return;
+
+        // Step 2：找到空腔的边界边
+        std::vector<std::array<int, 2>> boundary = findBoundaryEdges(cavity);
+
+        // Step 3：删除空腔中的三角形（从后往前删，避免索引失效）
+        std::sort(cavity.begin(), cavity.end(), std::greater<int>());
+        for (int fi : cavity) {
+            tris.erase(tris.begin() + fi);
+        }
+
+        // Step 4：加入新顶点
+        int newV = (int)verts.size();
+        verts.push_back(P);
+
+        // Step 5：用每条边界边和新点构成新三角形（保证逆时针）
+        for (auto& edge : boundary) {
+            int va = edge[0], vb = edge[1];
+            // 检查 va→vb→newV 是否逆时针，若不是则交换 va vb
+            float cross = Geo::cross2D(verts[va], verts[vb], verts[newV]);
+            if (cross < 0) std::swap(va, vb);
+            tris.push_back({ va, vb, newv });
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 从点集构建完整 Delaunay 三角剖分（Bowyer-Watson 算法）
+    // -----------------------------------------------------------------------
+    void build(const std::vector<Vec2>& points) {
+        verts.clear();
+        tris.clear();
+
+        // Step 1：构造超级三角形，其顶点索引为 0 1 2
+        Triangle2D st = creatSuperTriangle(points);
+        verts.push_back(st.a);
+        verts.push_back(st.b);
+        verts.push_back(st.c);
+        tris.push_back({ 0, 1, 2 });
+
+        // Step 2：逐点插入
+        for (const auto& p : points) {
+            insertPoint(p);
+        }
+
+        // Step 3：删除含超级三角形顶点（索引 0 1 2）的所有三角形
+        tris.erase(
+            std::remove_if(tris.begin(), tris.end(), [](const std::array<int, 3>& t) {
+                return t[0] <= 2 || t[1] <= 2 || t[2] <= 2;
+                }),
+            tris.end();
+                );
+
+        // Step 4：删除超级三角形的顶点，修正后续顶点索引
+        verts.erase(verts.begin(), verts.begin() + 3);
+        for (auto& t : tris) {
+            t[0] -= 3;
+            t[1] -= 3;
+            t[2] -= 3;
+        }
+
+        // Step 5：重建半边拓扑
+        topo.build(verts, tris);
+    }
+}; 
 }   // namespace Geo
