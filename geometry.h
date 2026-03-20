@@ -5,7 +5,9 @@
 #include <array>
 #include <algorithm>
 #include <map>
-
+#include <fstream>
+#include <string>
+#include <limits>
 // =============================================================================
 //  geometry.h  —  Personal C++ Geometry Template
 //  Author  : MI
@@ -596,6 +598,23 @@ namespace Geo {
     //    半边 he1: v1→v2,  next=he2
     //    半边 he2: v2→v0,  next=he0
     // =============================================================================
+    struct Vertex
+    {
+        Vec3 pos;          // 顶点坐标
+        int  outHE = -1;   // 任意一条从该顶点出发的半边索引
+
+        Vertex() = default;
+        explicit Vertex(const Vec3& p) : pos(p) {}
+    };
+
+    struct Face
+    {
+        int he = -1;    // 该面的任意一条半边索引
+
+        Face() = default;
+        explicit Face(int heIdx) : he(heIdx) {}
+
+    };
 
     struct HalfEdge {
         int next = -1;   // 同面的下一条半边索引
@@ -606,126 +625,184 @@ namespace Geo {
 
     // 半边网格（存储顶点 + 半边 + 面）
     struct HalfEdgeMesh {
-        std::vector<Vec3>     verts;      // 顶点坐标
-        std::vector<HalfEdge> halfedges;  // 半边数组
-        std::vector<int>      faceHE;     // 每个面的任意一条半边索引
-        std::vector<int>      vertHE;     // 每个顶点的任意一条出边索引
+        std::vector<Vertex>     verts;      // 顶点数组
+        std::vector<Face>       faces;      // 面数组
+        std::vector<HalfEdge>   halfedges;  // 半边数组
 
         // ---------- 构建 ----------
 
         // 从三角形列表构建半边结构
         // tris[i] = {v0, v1, v2}，顶点逆时针排列
         // Vec2 重载 — DelaunayMesh(2D网格)调用时使用，z 坐标补0
-        void build(const std::vector<Vec2>& vertices2d,
+        void build(const std::vector<Vec2>& verts2d,
             const std::vector<std::array<int, 3>>& tris) {
-            std::vector<Vec3> vertices;
-            vertices.reserve(vertices2d.size());
-            for (const auto& v : vertices2d)
-                vertices.push_back({ v.x, v.y, 0.0f });
-            build(vertices, tris);
+            std::vector<Vec3> v3;
+            v3.reserve(verts2d.size());
+            for (const auto& v : verts2d)
+                v3.push_back({ v.x, v.y, 0.0f });
+            build(v3, tris);
         }
 
-        void build(const std::vector<Vec3>& vertices,
+        void build(const std::vector<Vec3>& positions,
             const std::vector<std::array<int, 3>>& tris) {
-            verts = vertices;
-            int nv = (int)vertices.size();
+            int nv = (int)positions.size();
             int nf = (int)tris.size();
 
+            // 初始化顶点
+            verts.clear();
+            verts.reserve(nv);
+            for (const auto& p : positions) {
+                verts.emplace_back(p);
+            }
+
+            // 初始化面和半边
+            faces.clear();
+            faces.resize(nf);
             halfedges.clear();
-            faceHE.resize(nf, -1);
-            vertHE.resize(nv, -1);
+            halfedges.resize(nf * 3);
 
             // 每个三角形生成 3 条半边
-            halfedges.resize(nf * 3);
-            for (int f = 0; f < nf; f++) {
-                for (int i = 0; i < 3; i++) {
-                    int he_idx = f * 3 + i;
-                    halfedges[he_idx].vert = tris[f][i];
-                    halfedges[he_idx].next = f * 3 + (i + 1) % 3;
-                    halfedges[he_idx].face = f;
-                    halfedges[he_idx].twin = -1;   // 先全部设为边界
+            for (int f = 0; f < nf; ++f) {
+                faces[f].he = f * 3;
+                for (int i = 0; i < 3; ++i) {
+                    int he = f * 3 + i;
+                    halfedges[he].vert = tris[f][i];
+                    halfedges[he].next = f * 3 + (i + 1) % 3;
+                    halfedges[he].face = f;
+                    halfedges[he].twin = -1;
                 }
-                faceHE[f] = f * 3;
             }
 
             // 建立顶点出边
-            for (int he = 0; he < (int)halfedges.size(); he++)
-                vertHE[halfedges[he].vert] = he;
+            for (int he = 0; he < (int)halfedges.size(); ++he) {
+                verts[halfedges[he].vert].outHE = he;
+            }
 
-            // 建立 twin 关系
-            // 用 map 匹配：边 (a→b) 的 twin 是 (b→a)
+            // 建立 twin 关系：边 (a→b) 的 twin 是 (b→a)
             std::map<std::pair<int, int>, int> edgeMap;
-            for (int he = 0; he < (int)halfedges.size(); he++) {
+            for (int he = 0; he < (int)halfedges.size(); ++he) {
                 int v0 = halfedges[he].vert;
                 int v1 = halfedges[halfedges[he].next].vert;
                 edgeMap[{v0, v1}] = he;
             }
-            for (int he = 0; he < (int)halfedges.size(); he++) {
+            for (int he = 0; he < (int)halfedges.size(); ++he) {
                 int v0 = halfedges[he].vert;
                 int v1 = halfedges[halfedges[he].next].vert;
                 auto it = edgeMap.find({ v1, v0 });
-                if (it != edgeMap.end())
+                if (it != edgeMap.end()) {
                     halfedges[he].twin = it->second;
+                }
             }
+
+            
         }
 
         // ---------- 拓扑查询 ----------
 
-        // 查询顶点 v 的所有相邻顶点（一环邻域）
+        // 顶点 v 的所有相邻顶点（一环邻域，逆时针顺序）
         std::vector<int> neighborVerts(int v) const {
             std::vector<int> result;
-            int start = vertHE[v];
+            int start = verts[v].outHE;
             if (start == -1) return result;
-            int he = start;
+
+            int cur = start;
+            bool isBoundary = false;
+
+            // 正向遍历（沿 twin→next）
             do {
-                // 当前半边 he 的终点就是相邻顶点
-                result.push_back(halfedges[halfedges[he].next].vert);
-                // 前进：twin → next 得到下一条出边
-                int tw = halfedges[he].twin;
-                if (tw == -1) break;   // 边界顶点，循环中断
-                he = halfedges[tw].next;
-            } while (he != start);
+                result.push_back(halfedges[halfedges[cur].next].vert);
+                int tw = halfedges[cur].twin;
+                if (tw == -1) { isBoundary = true; break; }
+                cur = halfedges[tw].next;
+            } while (cur != start);
+
+            // 边界顶点：反向遍历另一侧
+            if (isBoundary) {
+                cur = start;
+                while (true) {
+                    // prev = cur.next.next（三角形中 cur 的上一条半边）
+                    int prev = halfedges[halfedges[cur].next].next;
+                    int tw = halfedges[prev].twin;
+                    if (tw == -1) {
+                        // prev 是边界边，prev.vert 是最后一个相邻顶点
+                        result.push_back(halfedges[prev].vert);
+                        break;
+                    }
+                    // prev.vert 是这一侧的相邻顶点
+                    result.push_back(halfedges[prev].vert);
+                    cur = halfedges[tw].next;  // 反向前进
+                }
+            }
+
             return result;
         }
 
-        // 查询顶点 v 的所有相邻三角形（一环面邻域）
+        // 顶点 v 的所有相邻面（一环面邻域，逆时针顺序）
         std::vector<int> neighborFaces(int v) const {
             std::vector<int> result;
-            int start = vertHE[v];
+            int start = verts[v].outHE;
             if (start == -1) return result;
-            int he = start;
-            do {
-                if (halfedges[he].face != -1)
-                    result.push_back(halfedges[he].face);
-                int tw = halfedges[he].twin;
-                if (tw == -1) break;
-                he = halfedges[tw].next;
-            } while (he != start);
+
+            int cur = start;
+            bool isBoundary = false;
+
+            // 正向遍历
+            do
+            {
+                if (halfedges[cur].face != -1) result.push_back(halfedges[cur].face);
+
+                int tw = halfedges[cur].twin;
+                if (tw == -1) {
+                    isBoundary = true;
+                    break;
+                }
+                cur = halfedges[tw].next;
+            } while (cur != start);
+
+            // 边界顶点：反向遍历另一侧
+            if (isBoundary) {
+                cur = start;
+                while (true) {
+                    int prev = halfedges[halfedges[cur].next].next;
+                    int tw = halfedges[prev].twin;
+                    if (tw == -1) break;  // 边界边，对应的面正向已收集，停止
+                    cur = halfedges[tw].next;
+                    if (halfedges[cur].face != -1)
+                        result.push_back(halfedges[cur].face);
+                }
+            }
+
             return result;
         }
 
-        // 判断顶点 v 是否在边界上（有半边的 twin == -1）
+        // 判断顶点 v 是否在边界上
         bool isBoundaryVert(int v) const {
-            int start = vertHE[v];
+            int start = verts[v].outHE;
             if (start == -1) return true;
             int he = start;
-            do {
+            do
+            {
                 if (halfedges[he].twin == -1) return true;
                 he = halfedges[halfedges[he].twin].next;
             } while (he != start);
+
             return false;
         }
 
-        // 三角形的三个顶点索引
+        // 面 f 的三个顶点索引
         std::array<int, 3> faceVerts(int f) const {
-            int he = faceHE[f];
+            int he = faces[f].he;
             return {
                 halfedges[he].vert,
                 halfedges[halfedges[he].next].vert,
                 halfedges[halfedges[halfedges[he].next].next].vert
             };
         }
+
+
     };
+
+
 
 
     // =============================================================================
@@ -776,7 +853,7 @@ namespace Geo {
             if (inTriangle(A, B, C, P)) return f;
 
             // 找到 P 在哪条边的外侧，跳到对面三角形
-            int he = mesh.faceHE[f];
+            int he = mesh.faces[f].he;
             bool jumped = false;
             for (int i = 0; i < 3; i++) {
                 int va = mesh.halfedges[he].vert;
@@ -824,11 +901,14 @@ namespace Geo {
 
             float x_mid = (x_min + x_max) * 0.5f;
             float y_mid = (y_min + y_max) * 0.5f;
-            float delta = std::max(x_max - x_min, y_max - y_min) * 3.0f;
 
-            Vec2 v0 = { x_mid - delta,  y_mid - delta };
-            Vec2 v1 = { x_mid + delta,  y_mid - delta };
-            Vec2 v2 = { x_mid,          y_mid + delta };
+            float dx = x_max - x_min;
+            float dy = y_max - y_min;
+            float delta = (dx + dy + 1.0f) * 10.0f;
+
+            Vec2 v0 = { x_mid - 2.0f * delta, y_mid - delta };
+            Vec2 v1 = { x_mid + 2.0f * delta, y_mid - delta };
+            Vec2 v2 = { x_mid,                y_mid + 2.0f * delta };
 
             return Triangle2D(v0, v1, v2);
         }
@@ -900,6 +980,7 @@ namespace Geo {
         void insertPoint(const Vec2& P) {
             // Step 1: 找到所有外接圆包含 P 的三角形（空腔）
             std::vector<int> cavity = findCavity(P);
+
             if (cavity.empty()) return;
 
             // Step 2：找到空腔的边界边
@@ -965,4 +1046,139 @@ namespace Geo {
             topo.build(verts, tris);
         }
     };
+
+    // =============================================================================
+    //  Part 8 : 可视化导出
+    //
+    //  两种格式：
+    //  1. exportCSV  → 输出顶点和三角形到 .csv，配合 Python + matplotlib 绘制
+    //  2. exportSVG  → 直接生成 SVG 文件，浏览器打开即可查看
+    // =============================================================================
+
+    // 导出为 CSV（配合 Python 绘制）
+    // 生成两个文件：prefix_verts.csv 和 prefix_tris.csv
+    inline void exportCSV(
+        const std::vector<Vec2>& verts,
+        const std::vector<std::array<int, 3>>& tris,
+        const std::string& prefix
+    ) {
+        std::ofstream fv(prefix + "_verts.csv");
+        fv << "x,y\n";
+        for (const auto& v : verts) {
+            fv << v.x << "," << v.y << "\n";
+            fv.close();
+
+            std::ofstream ft(prefix + "_tris.csv");
+            ft << "i0, i1, i2\n";
+            for (const auto& t : tris) {
+                ft << t[0] << "," << t[1] << "," << t[2] << "\n";
+            }
+            ft.close();
+        }
+    }
+
+    // 导出为 SVG（直接在浏览器打开即可查看）
+    // showIndex=true 时显示顶点编号，svgSize 控制画布大小
+    inline void exportSVG(
+        const std::vector<Vec2>& verts,
+        const std::vector<std::array<int, 3>>& tris,
+        const std::string& filename,
+        bool showIndex = false,
+        int svgSize = 600
+    ) {
+        if (verts.empty()) return;
+
+        // 计算包围盒
+        float xmin = verts[0].x, xmax = verts[0].x;
+        float ymin = verts[0].y, ymax = verts[0].y;
+        for (const auto& v : verts) {
+            if (v.x < xmin) xmin = v.x;
+            if (v.x > xmax) xmax = v.x;
+            if (v.y < ymin) ymin = v.y;
+            if (v.y > ymax) ymax = v.y;
+        }
+        const float margin = svgSize * 0.08f;
+        const float drawSize = svgSize - 2.0f * margin;
+        float range = std::max(xmax - xmin, ymax - ymin);
+        if (range < 1e-9f) range = 1.0f;
+        // 世界坐标 → SVG 坐标（y 轴翻转）
+        auto sx = [&](float x) { return margin + (x - xmin) / range * drawSize; };
+        auto sy = [&](float y) { return margin + (ymax - y) / range * drawSize; };
+
+        std::ofstream f(filename);
+        f << std::fixed;
+        f.precision(2);
+
+        // 使用单独的语句输出，避免字符串内嵌引号问题
+        const std::string Q = "\"";
+        f << "<svg xmlns=" << Q << "http://www.w3.org/2000/svg" << Q
+            << " width=" << Q << svgSize << Q
+            << " height=" << Q << svgSize << Q << ">\n";
+        f << "<rect width=" << Q << "100%" << Q
+            << " height=" << Q << "100%" << Q
+            << " fill=" << Q << "#1e272e" << Q << "/>\n";
+
+        // 三角形边
+        f << "<g stroke=" << Q << "#74b9ff" << Q
+            << " stroke-width=" << Q << "0.8" << Q
+            << " fill=" << Q << "none" << Q
+            << " opacity=" << Q << "0.7" << Q << ">\n";
+        for (const auto& t : tris) {
+            float ax = sx(verts[t[0]].x), ay = sy(verts[t[0]].y);
+            float bx = sx(verts[t[1]].x), by = sy(verts[t[1]].y);
+            float cx = sx(verts[t[2]].x), cy = sy(verts[t[2]].y);
+            f << "<polygon points=" << Q
+                << ax << "," << ay << " "
+                << bx << "," << by << " "
+                << cx << "," << cy << Q << "/>\n";
+        }
+        f << "</g>\n";
+
+        // 顶点（黄色圆点）
+        f << "<g fill=" << Q << "#fdcb6e" << Q
+            << " stroke=" << Q << "#e17055" << Q
+            << " stroke-width=" << Q << "0.5" << Q << ">\n";
+        for (const auto& v : verts) {
+            f << "<circle cx=" << Q << sx(v.x) << Q
+                << " cy=" << Q << sy(v.y) << Q
+                << " r=" << Q << "3" << Q << "/>\n";
+        }
+        f << "</g>\n";
+
+        // 顶点编号（可选）
+        if (showIndex) {
+            f << "<g font-size=" << Q << "9" << Q
+                << " fill=" << Q << "#dfe6e9" << Q
+                << " font-family=" << Q << "monospace" << Q << ">\n";
+            for (int i = 0; i < (int)verts.size(); ++i) {
+                f << "<text x=" << Q << (sx(verts[i].x) + 4) << Q
+                    << " y=" << Q << (sy(verts[i].y) - 4) << Q
+                    << ">" << i << "</text>\n";
+            }
+            f << "</g>\n";
+        }
+
+        // 统计信息
+        f << "<text x=" << Q << "10" << Q
+            << " y=" << Q << "20" << Q
+            << " font-size=" << Q << "12" << Q
+            << " fill=" << Q << "#95a5a6" << Q
+            << " font-family=" << Q << "Arial" << Q << ">"
+            << "verts=" << verts.size() << "  tris=" << tris.size()
+            << "</text>\n";
+
+        f << "</svg>\n";
+        f.close();
+    }
+
+    // DelaunayMesh 的便捷导出方法
+    inline void exportMeshCSV(const DelaunayMesh& mesh, const std::string& prefix) {
+        exportCSV(mesh.verts, mesh.tris, prefix);
+    }
+
+    inline void exportMeshSVG(const DelaunayMesh& mesh, const std::string& filename,
+        bool showIndex = false, int svgSize = 600) {
+        exportSVG(mesh.verts, mesh.tris, filename, showIndex, svgSize);
+    }
+
 }   // namespace Geo
