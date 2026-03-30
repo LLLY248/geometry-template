@@ -29,17 +29,21 @@
 
 namespace Geo {
 
-    constexpr float EPS = 1e-6f;	 // 浮点判零阈值，几何判断用
-    constexpr float PI = 3.14159265358979323846f;
+    // 浮点类型别名——方便切换 float/double
+    // Delaunay 等算法对数值精度敏感，推荐使用 double
+    using real = double;
+
+    constexpr real EPS = 1e-9;	 // 浮点判零阈值，几何判断用
+    constexpr real PI = 3.14159265358979323846;
 
     // 浮点判零
-    inline bool isZero(float x) { return std::abs(x) < EPS; }
+    inline bool isZero(real x) { return std::abs(x) < EPS; }
 
     // 浮点判等
-    inline bool equal(float a, float b) { return std::abs(a - b) < EPS; }
+    inline bool equal(real a, real b) { return std::abs(a - b) < EPS; }
 
     // 符号函数：返回 -1 / 0 / 1
-    inline int sign(float x) {
+    inline int sign(real x) {
         if (x > EPS) return  1;
         if (x < -EPS) return -1;
         return 0;
@@ -51,21 +55,21 @@ namespace Geo {
     // =============================================================================
 
     struct Vec2 {
-        float x, y;
+        real x, y;
 
         // ---------- 构造 ----------
         Vec2() : x(0), y(0) {}
-        Vec2(float x, float y) : x(x), y(y) {}
+        Vec2(real x, real y) : x(x), y(y) {}
 
         // ---------- 基本运算 ----------
         Vec2 operator+(const Vec2& v) const { return { x + v.x, y + v.y }; }
         Vec2 operator-(const Vec2& v) const { return { x - v.x, y - v.y }; }
-        Vec2 operator*(float f)       const { return { x * f,   y * f }; }
-        Vec2 operator/(float f)       const { return { x / f,   y / f }; }
+        Vec2 operator*(real f)       const { return { x * f,   y * f }; }
+        Vec2 operator/(real f)       const { assert(std::abs(f) > EPS && "Vec2: division by zero"); return { x / f,   y / f }; }
 
         Vec2& operator+=(const Vec2& v) { x += v.x; y += v.y; return *this; }
         Vec2& operator-=(const Vec2& v) { x -= v.x; y -= v.y; return *this; }
-        Vec2& operator*=(float f) { x *= f;   y *= f;   return *this; }
+        Vec2& operator*=(real f) { x *= f;   y *= f;   return *this; }
 
         bool operator==(const Vec2& v) const { return equal(x, v.x) && equal(y, v.y); }
         bool operator!=(const Vec2& v) const { return !(*this == v); }
@@ -73,22 +77,22 @@ namespace Geo {
         // ---------- 向量运算 ----------
 
         // 点积
-        float dot(const Vec2& v) const { return x * v.x + y * v.y; }
+        real dot(const Vec2& v) const { return x * v.x + y * v.y; }
 
         // 2D叉积（标量）
         // 正值 → v 在 *this 的逆时针方向
         // 负值 → v 在 *this 的顺时针方向
         // 零   → 平行或共线
-        float cross(const Vec2& v) const { return x * v.y - y * v.x; }
+        real cross(const Vec2& v) const { return x * v.y - y * v.x; }
 
         // 向量长度
-        float length()  const { return std::sqrt(x * x + y * y); }
-        float length2() const { return x * x + y * y; }   // 长度的平方，避免开方更快
+        real length()  const { return std::sqrt(x * x + y * y); }
+        real length2() const { return x * x + y * y; }   // 长度的平方，避免开方更快
 
         // 单位向量（返回新向量，不修改自身）
         // 零向量时返回自身，不崩溃
         Vec2 normalized() const {
-            float len = length();
+            real len = length();
             if (len < EPS) return *this;
             return *this / len;
         }
@@ -97,15 +101,15 @@ namespace Geo {
         Vec2 perp() const { return { -y, x }; }
 
         // ---------- 工具 ----------
-        bool isZero() const { return length2() < EPS * EPS; }
+        bool isZero() const { return length2() < EPS; }
     };
 
     // 支持 scalar * Vec2 写法
-    inline Vec2 operator*(float f, const Vec2& v) { return v * f; }
+    inline Vec2 operator*(real f, const Vec2& v) { return v * f; }
 
     // 两点距离
-    inline float dist(const Vec2& a, const Vec2& b) { return (a - b).length(); }
-    inline float dist2(const Vec2& a, const Vec2& b) { return (a - b).length2(); }
+    inline real dist(const Vec2& a, const Vec2& b) { return (a - b).length(); }
+    inline real dist2(const Vec2& a, const Vec2& b) { return (a - b).length2(); }
 
 
     // =============================================================================
@@ -113,21 +117,21 @@ namespace Geo {
     // =============================================================================
 
     struct Vec3 {
-        float x, y, z;
+        real x, y, z;
 
         // ---------- 构造 ----------
         Vec3() : x(0), y(0), z(0) {}
-        Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
+        Vec3(real x, real y, real z) : x(x), y(y), z(z) {}
 
         // ---------- 基本运算 ----------
         Vec3 operator+(const Vec3& v) const { return { x + v.x, y + v.y, z + v.z }; }
         Vec3 operator-(const Vec3& v) const { return { x - v.x, y - v.y, z - v.z }; }
-        Vec3 operator*(float f)       const { return { x * f,   y * f,   z * f }; }
-        Vec3 operator/(float f)       const { return { x / f,   y / f,   z / f }; }
+        Vec3 operator*(real f)       const { return { x * f,   y * f,   z * f }; }
+        Vec3 operator/(real f)       const { assert(std::abs(f) > EPS && "Vec3: division by zero"); return { x / f,   y / f,   z / f }; }
 
         Vec3& operator+=(const Vec3& v) { x += v.x; y += v.y; z += v.z; return *this; }
         Vec3& operator-=(const Vec3& v) { x -= v.x; y -= v.y; z -= v.z; return *this; }
-        Vec3& operator*=(float f) { x *= f;   y *= f;   z *= f;   return *this; }
+        Vec3& operator*=(real f) { x *= f;   y *= f;   z *= f;   return *this; }
 
         bool operator==(const Vec3& v) const { return equal(x, v.x) && equal(y, v.y) && equal(z, v.z); }
         bool operator!=(const Vec3& v) const { return !(*this == v); }
@@ -135,7 +139,7 @@ namespace Geo {
         // ---------- 向量运算 ----------
 
         // 点积
-        float dot(const Vec3& v) const {
+        real dot(const Vec3& v) const {
             return x * v.x + y * v.y + z * v.z;
         }
 
@@ -153,29 +157,29 @@ namespace Geo {
         }
 
         // 向量长度
-        float length()  const { return std::sqrt(x * x + y * y + z * z); }
-        float length2() const { return x * x + y * y + z * z; }
+        real length()  const { return std::sqrt(x * x + y * y + z * z); }
+        real length2() const { return x * x + y * y + z * z; }
 
         // 单位向量（零向量时返回自身）
         Vec3 normalized() const {
-            float len = length();
+            real len = length();
             if (len < EPS) return *this;
             return *this / len;
         }
 
         // ---------- 工具 ----------
-        bool isZero() const { return length2() < EPS * EPS; }
+        bool isZero() const { return length2() < EPS; }
 
         // 投影到另一个向量上的标量分量
-        float projectOnto(const Vec3& axis) const {
+        real projectOnto(const Vec3& axis) const {
             return this->dot(axis.normalized());
         }
     };
 
-    inline Vec3 operator*(float f, const Vec3& v) { return v * f; }
+    inline Vec3 operator*(real f, const Vec3& v) { return v * f; }
 
-    inline float dist(const Vec3& a, const Vec3& b) { return (a - b).length(); }
-    inline float dist2(const Vec3& a, const Vec3& b) { return (a - b).length2(); }
+    inline real dist(const Vec3& a, const Vec3& b) { return (a - b).length(); }
+    inline real dist2(const Vec3& a, const Vec3& b) { return (a - b).length2(); }
 
     // =============================================================================
     //  Part 3 : 基本几何判断（2D）
@@ -191,7 +195,7 @@ namespace Geo {
     // 返回正值 → B 在 OA 的左侧（逆时针）
     // 返回负值 → B 在 OA 的右侧（顺时针）
     // 返回零   → O、A、B 三点共线
-    inline float cross2D(const Vec2& O, const Vec2& A, const Vec2& B) {
+    inline real cross2D(const Vec2& O, const Vec2& A, const Vec2& B) {
         return (A - O).cross(B - O);
     }
 
@@ -224,10 +228,10 @@ namespace Geo {
     // 判断两线段 AB 和 CD 是否相交（包括端点接触）
     inline bool segmentsIntersect(const Vec2& A, const Vec2& B,
         const Vec2& C, const Vec2& D) {
-        float d1 = cross2D(C, D, A);
-        float d2 = cross2D(C, D, B);
-        float d3 = cross2D(A, B, C);
-        float d4 = cross2D(A, B, D);
+        real d1 = cross2D(C, D, A);
+        real d2 = cross2D(C, D, B);
+        real d3 = cross2D(A, B, C);
+        real d4 = cross2D(A, B, D);
 
         // 一般情况：两段互相跨越
         if (sign(d1) * sign(d2) < 0 && sign(d3) * sign(d4) < 0) return true;
@@ -247,12 +251,12 @@ namespace Geo {
 
     // 三角形有符号面积（顶点逆时针时为正）
     // 公式：叉积 / 2
-    inline float triangleSignedArea(const Vec2& A, const Vec2& B, const Vec2& C) {
-        return cross2D(A, B, C) * 0.5f;
+    inline real triangleSignedArea(const Vec2& A, const Vec2& B, const Vec2& C) {
+        return cross2D(A, B, C) * 0.5;
     }
 
     // 三角形面积（始终为正）
-    inline float triangleArea(const Vec2& A, const Vec2& B, const Vec2& C) {
+    inline real triangleArea(const Vec2& A, const Vec2& B, const Vec2& C) {
         return std::abs(triangleSignedArea(A, B, C));
     }
 
@@ -260,9 +264,9 @@ namespace Geo {
     // 原理：P 在 ABC 内 ⟺ P 在 AB、BC、CA 三条有向边的同侧
     // 注意：无论 ABC 顶点是顺时针还是逆时针，has_neg && has_pos 的判断都正确
     inline bool inTriangle(const Vec2& A, const Vec2& B, const Vec2& C, const Vec2& P) {
-        float d1 = cross2D(A, B, P);
-        float d2 = cross2D(B, C, P);
-        float d3 = cross2D(C, A, P);
+        real d1 = cross2D(A, B, P);
+        real d2 = cross2D(B, C, P);
+        real d3 = cross2D(C, A, P);
         bool has_neg = (d1 < -EPS) || (d2 < -EPS) || (d3 < -EPS);
         bool has_pos = (d1 > EPS) || (d2 > EPS) || (d3 > EPS);
         return !(has_neg && has_pos);
@@ -272,13 +276,13 @@ namespace Geo {
     // 原理：外接圆圆心是三边垂直平分线的交点
     // 用途：Delaunay 三角剖分的核心计算
     inline Vec2 circumcenter(const Vec2& A, const Vec2& B, const Vec2& C) {
-        float ax = B.x - A.x, ay = B.y - A.y;
-        float bx = C.x - A.x, by = C.y - A.y;
-        float D = 2.0f * (ax * by - ay * bx);
+        real ax = B.x - A.x, ay = B.y - A.y;
+        real bx = C.x - A.x, by = C.y - A.y;
+        real D = 2.0 * (ax * by - ay * bx);
         // D 接近零说明三点共线，外接圆不存在
         assert(!isZero(D) && "circumcenter: three points are collinear");
-        float ux = (by * (ax * ax + ay * ay) - ay * (bx * bx + by * by)) / D;
-        float uy = (ax * (bx * bx + by * by) - bx * (ax * ax + ay * ay)) / D;
+        real ux = (by * (ax * ax + ay * ay) - ay * (bx * bx + by * by)) / D;
+        real uy = (ax * (bx * bx + by * by) - bx * (ax * ax + ay * ay)) / D;
         return { A.x + ux, A.y + uy };
     }
 
@@ -297,7 +301,7 @@ namespace Geo {
     // 用途：Delaunay 合法性检验（Lawson flip 的判断依据）
     inline bool inCircumcircle(const Vec2& A, const Vec2& B, const Vec2& C, const Vec2& P) {
         // 退化情况：三点共线，外接圆不存在，直接返回 false
-        float area2 = cross2D(A, B, C);
+        real area2 = cross2D(A, B, C);
         if (isZero(area2)) return false;
 
         // 如果顶点是顺时针排列，交换 B C 使其变为逆时针
@@ -308,17 +312,17 @@ namespace Geo {
         if (area2 < 0) std::swap(b, c);
 
         // 平移：以 P 为原点，A B C 坐标相应减去 P
-        float ax = a->x - P.x, ay = a->y - P.y;
-        float bx = b->x - P.x, by = b->y - P.y;
-        float cx = c->x - P.x, cy = c->y - P.y;
+        real ax = a->x - P.x, ay = a->y - P.y;
+        real bx = b->x - P.x, by = b->y - P.y;
+        real cx = c->x - P.x, cy = c->y - P.y;
 
         // 各点到 P 的距离平方（提升到抛物面的 z 坐标）
-        float ar2 = ax * ax + ay * ay;
-        float br2 = bx * bx + by * by;
-        float cr2 = cx * cx + cy * cy;
+        real ar2 = ax * ax + ay * ay;
+        real br2 = bx * bx + by * by;
+        real cr2 = cx * cx + cy * cy;
 
         // 3×3 行列式展开（按第三列余子式）
-        float det = ax * (by * cr2 - cy * br2)
+        real det = ax * (by * cr2 - cy * br2)
             - ay * (bx * cr2 - cx * br2)
             + ar2 * (bx * cy - by * cx);
 
@@ -340,7 +344,7 @@ namespace Geo {
         Vec2 a, b, c;   // 三个顶点，建议逆时针排列
 
         // ---------- 构造 ----------
-        Triangle2D() {}
+        Triangle2D() : a(), b(), c() {}
         Triangle2D(const Vec2& a, const Vec2& b, const Vec2& c) : a(a), b(b), c(c) {}
 
         // ---------- 基本属性 ----------
@@ -350,13 +354,13 @@ namespace Geo {
         Vec2 edge_ac() const { return c - a; }
 
         // 有符号面积（逆时针为正）
-        float signedArea() const { return triangleSignedArea(a, b, c); }
+        real signedArea() const { return triangleSignedArea(a, b, c); }
 
         // 面积（始终为正）
-        float area() const { return triangleArea(a, b, c); }
+        real area() const { return triangleArea(a, b, c); }
 
         // 重心
-        Vec2 centroid() const { return (a + b + c) * (1.0f / 3.0f); }
+        Vec2 centroid() const { return (a + b + c) * (1.0 / 3.0); }
 
         // 外接圆圆心
         Vec2 circumcenter() const { return Geo::circumcenter(a, b, c); }
@@ -380,18 +384,18 @@ namespace Geo {
 
     // 多边形有符号面积（顶点逆时针时为正）
     // 公式：shoelace（鞋带公式）
-    inline float polygonSignedArea(const std::vector<Vec2>& poly) {
-        float area = 0;
+    inline real polygonSignedArea(const std::vector<Vec2>& poly) {
+        real area = 0;
         int n = (int)poly.size();
         for (int i = 0; i < n; i++) {
             const Vec2& cur = poly[i];
             const Vec2& next = poly[(i + 1) % n];
             area += cur.cross(next);
         }
-        return area * 0.5f;
+        return area * 0.5;
     }
 
-    inline float polygonArea(const std::vector<Vec2>& poly) {
+    inline real polygonArea(const std::vector<Vec2>& poly) {
         return std::abs(polygonSignedArea(poly));
     }
 
@@ -409,10 +413,10 @@ namespace Geo {
         // 射线法
         bool inside = false;
         for (int i = 0, j = n - 1; i < n; j = i++) {
-            float yi = poly[i].y, yj = poly[j].y;
-            float xi = poly[i].x, xj = poly[j].x;
+            real yi = poly[i].y, yj = poly[j].y;
+            real xi = poly[i].x, xj = poly[j].x;
             if ((yi > P.y) != (yj > P.y)) {
-                float xIntersect = (xj - xi) * (P.y - yi) / (yj - yi) + xi;
+                real xIntersect = (xj - xi) * (P.y - yi) / (yj - yi) + xi;
                 if (P.x < xIntersect)
                     inside = !inside;
             }
@@ -445,7 +449,7 @@ namespace Geo {
         // 叉积 > 0 → a 极角更小 → a 排在前面
         // 共线时距离近的排前面
         std::sort(points.begin() + 1, points.end(), [&](const Vec2& a, const Vec2& b) {
-            float c = cross2D(p0, a, b);
+            real c = cross2D(p0, a, b);
             if (!isZero(c)) return c > 0;
             return dist2(p0, a) < dist2(p0, b);
             });
@@ -478,7 +482,7 @@ namespace Geo {
         Vec3 a, b, c;   // 三个顶点，建议逆时针朝向正面
 
         // ---------- 构造 ----------
-        Triangle3D() {}
+        Triangle3D() : a(), b(), c() {}
         Triangle3D(const Vec3& a, const Vec3& b, const Vec3& c) : a(a), b(b), c(c) {}
 
         // ---------- 基本属性 ----------
@@ -492,28 +496,28 @@ namespace Geo {
         Vec3 rawNormal() const { return edge_ab().cross(edge_ac()); }
 
         // 面积 = 两边向量叉积长度的一半
-        float area() const { return rawNormal().length() * 0.5f; }
+        real area() const { return rawNormal().length() * 0.5; }
 
         // 单位法向量
         Vec3 normal() const { return rawNormal().normalized(); }
 
         // 重心 = 三顶点坐标平均值
-        Vec3 centroid() const { return (a + b + c) * (1.0f / 3.0f); }
+        Vec3 centroid() const { return (a + b + c) * (1.0 / 3.0); }
 
         // ---------- 点与平面的关系 ----------
 
         // 点 P 到三角形所在平面的有符号距离
         // 正值 → P 在法向量正面一侧
         // 负值 → P 在法向量背面一侧
-        float signedDistToPlane(const Vec3& P) const {
+        real signedDistToPlane(const Vec3& P) const {
             Vec3 n = rawNormal();
-            float len = n.length();
+            real len = n.length();
             if (len < EPS) return 0;
             return n.dot(P - a) / len;
         }
 
         // 判断点 P 是否在三角形所在平面内（给定误差 eps）
-        bool pointOnPlane(const Vec3& P, float eps = 1e-5f) const {
+        bool pointOnPlane(const Vec3& P, real eps = 1e-5) const {
             return std::abs(signedDistToPlane(P)) < eps;
         }
 
@@ -522,30 +526,30 @@ namespace Geo {
         // 用重心坐标法判断点 P 是否在三角形内（含边界）
         // 前提：P 已经在三角形所在平面上（可先用 pointOnPlane 检查）
         // 返回：是否在三角形内，同时输出重心坐标 (u, v)，w = 1 - u - v
-        bool inTriangle(const Vec3& P, float& u, float& v) const {
+        bool inTriangle(const Vec3& P, real& u, real& v) const {
             Vec3 v0 = edge_ac();
             Vec3 v1 = edge_ab();
             Vec3 v2 = P - a;
 
-            float dot00 = v0.dot(v0);
-            float dot01 = v0.dot(v1);
-            float dot02 = v0.dot(v2);
-            float dot11 = v1.dot(v1);
-            float dot12 = v1.dot(v2);
+            real dot00 = v0.dot(v0);
+            real dot01 = v0.dot(v1);
+            real dot02 = v0.dot(v2);
+            real dot11 = v1.dot(v1);
+            real dot12 = v1.dot(v2);
 
-            float denom = dot00 * dot11 - dot01 * dot01;
+            real denom = dot00 * dot11 - dot01 * dot01;
             if (std::abs(denom) < EPS) return false;   // 退化三角形
 
-            float inv = 1.0f / denom;
+            real inv = 1.0 / denom;
             u = (dot11 * dot02 - dot01 * dot12) * inv;
             v = (dot00 * dot12 - dot01 * dot02) * inv;
 
-            return (u >= -EPS) && (v >= -EPS) && (u + v <= 1.0f + EPS);
+            return (u >= -EPS) && (v >= -EPS) && (u + v <= 1.0 + EPS);
         }
 
         // 不需要重心坐标时的简化版
         bool inTriangle(const Vec3& P) const {
-            float u, v;
+            real u, v;
             return inTriangle(P, u, v);
         }
 
@@ -555,15 +559,15 @@ namespace Geo {
         // 输出：t（交点在光线上的参数），u、v（重心坐标）
         // 返回：是否相交（t > 0 表示正方向相交）
         bool rayIntersect(const Vec3& orig, const Vec3& dir,
-            float& t, float& u, float& v) const {
+            real& t, real& u, real& v) const {
             Vec3 ab = edge_ab();
             Vec3 ac = edge_ac();
             Vec3 h = dir.cross(ac);
-            float det = ab.dot(h);
+            real det = ab.dot(h);
 
             if (std::abs(det) < EPS) return false;   // 光线平行于三角形
 
-            float inv_det = 1.0f / det;
+            real inv_det = 1.0 / det;
             Vec3 s = orig - a;
             u = s.dot(h) * inv_det;
             if (u < 0 || u > 1) return false;
@@ -639,7 +643,7 @@ namespace Geo {
             std::vector<Vec3> v3;
             v3.reserve(verts2d.size());
             for (const auto& v : verts2d)
-                v3.push_back({ v.x, v.y, 0.0f });
+                v3.push_back({ v.x, v.y, 0.0 });
             build(v3, tris);
         }
 
@@ -693,85 +697,90 @@ namespace Geo {
                     halfedges[he].twin = it->second;
                 }
             }
-
-            
         }
+
+
 
         // ---------- 拓扑查询 ----------
 
-        // 顶点 v 的所有相邻顶点（一环邻域，逆时针顺序）
+        // 辅助：找到顶点 v 最右侧的边界出边
+        // 如果 v 是内部顶点（没有边界边），返回 -1
+        int findRightmostHE(int v) const {
+            int start = verts[v].outHE;
+            if (start == -1) return -1;
+            int cur = start;
+            do {
+                int tw = halfedges[cur].twin;
+                if (tw == -1) return cur;
+                cur = halfedges[tw].next;
+            } while (cur != start);
+            return -1;  // 绕了一圈，内部顶点
+        }
+
+        // 顶点 v 的所有相邻顶点（一环邻域）
+        // 统一保证返回的顶点顺序为严格的逆时针 (CCW)
         std::vector<int> neighborVerts(int v) const {
             std::vector<int> result;
             int start = verts[v].outHE;
             if (start == -1) return result;
 
-            int cur = start;
-            bool isBoundary = false;
+            int rightmost = findRightmostHE(v);
 
-            // 正向遍历（沿 twin→next）
-            do {
-                result.push_back(halfedges[halfedges[cur].next].vert);
-                int tw = halfedges[cur].twin;
-                if (tw == -1) { isBoundary = true; break; }
-                cur = halfedges[tw].next;
-            } while (cur != start);
-
-            // 边界顶点：反向遍历另一侧
-            if (isBoundary) {
-                cur = start;
-                while (true) {
-                    // prev = cur.next.next（三角形中 cur 的上一条半边）
+            if (rightmost == -1) {
+                // 内部顶点：统一改为逆时针 (CCW) 遍历
+                int cur = start;
+                do {
+                    result.push_back(halfedges[halfedges[cur].next].vert);
                     int prev = halfedges[halfedges[cur].next].next;
-                    int tw = halfedges[prev].twin;
-                    if (tw == -1) {
-                        // prev 是边界边，prev.vert 是最后一个相邻顶点
-                        result.push_back(halfedges[prev].vert);
-                        break;
-                    }
-                    // prev.vert 是这一侧的相邻顶点
+                    cur = halfedges[prev].twin; // 逆时针步进
+                } while (cur != start);
+            }
+            else {
+                // 边界顶点：从最右侧边界出边逆时针 (CCW) 遍历
+                int cur = rightmost;
+                result.push_back(halfedges[halfedges[cur].next].vert);
+                while (true) {
+                    int prev = halfedges[halfedges[cur].next].next;
                     result.push_back(halfedges[prev].vert);
-                    cur = halfedges[tw].next;  // 反向前进
+
+                    int tw = halfedges[prev].twin;
+                    if (tw == -1) break; // 碰到最左侧边界
+                    cur = tw;
                 }
             }
-
             return result;
         }
 
-        // 顶点 v 的所有相邻面（一环面邻域，逆时针顺序）
+        // 顶点 v 的所有相邻面（一环面邻域）
+        // 统一保证返回的面顺序为严格的逆时针 (CCW)
         std::vector<int> neighborFaces(int v) const {
             std::vector<int> result;
             int start = verts[v].outHE;
             if (start == -1) return result;
 
-            int cur = start;
-            bool isBoundary = false;
+            int rightmost = findRightmostHE(v);
 
-            // 正向遍历
-            do
-            {
-                if (halfedges[cur].face != -1) result.push_back(halfedges[cur].face);
-
-                int tw = halfedges[cur].twin;
-                if (tw == -1) {
-                    isBoundary = true;
-                    break;
-                }
-                cur = halfedges[tw].next;
-            } while (cur != start);
-
-            // 边界顶点：反向遍历另一侧
-            if (isBoundary) {
-                cur = start;
+            if (rightmost == -1) {
+                // 内部顶点：统一改为逆时针 (CCW) 遍历
+                int cur = start;
+                do {
+                    result.push_back(halfedges[cur].face);
+                    int prev = halfedges[halfedges[cur].next].next;
+                    cur = halfedges[prev].twin;
+                } while (cur != start);
+            }
+            else {
+                // 边界顶点：从最右侧边界出边逆时针 (CCW) 遍历
+                int cur = rightmost;
                 while (true) {
+                    result.push_back(halfedges[cur].face);
+
                     int prev = halfedges[halfedges[cur].next].next;
                     int tw = halfedges[prev].twin;
-                    if (tw == -1) break;  // 边界边，对应的面正向已收集，停止
-                    cur = halfedges[tw].next;
-                    if (halfedges[cur].face != -1)
-                        result.push_back(halfedges[cur].face);
+                    if (tw == -1) break;
+                    cur = tw;
                 }
             }
-
             return result;
         }
 
@@ -799,7 +808,337 @@ namespace Geo {
             };
         }
 
+        // 边翻转
+        void flipEdge(int he) {
+            int e = he;                                 // D→B
+            int e_n = halfedges[e].next;                // B→A
+            int e_p = halfedges[e_n].next;              // A→D
 
+            int et = halfedges[e].twin;                 // B→D
+            int et_n = halfedges[et].next;              // D→C
+            int et_p = halfedges[et_n].next;            // C→B
+
+            int f1 = halfedges[e].face;                 // ADB 改成 ACB
+            int f2 = halfedges[et].face;                // BDC 改成 ADC
+
+            int A = halfedges[e_p].vert;
+            int C = halfedges[et_p].vert;
+
+            // 修改翻转边起点
+            halfedges[e].vert = A;
+            halfedges[et].vert = C;
+
+            // 重连 next
+            halfedges[e].next = et_p;
+            halfedges[et_p].next = e_n;
+            halfedges[e_n].next = e;
+
+            halfedges[et].next = e_p;
+            halfedges[e_p].next = et_n;
+            halfedges[et_n].next = et;
+
+            // 修改 face 归属
+            halfedges[e].face = f1;
+            halfedges[et_p].face = f1;
+            halfedges[e_n].face = f1;
+
+            halfedges[e_p].face = f2;
+            halfedges[et_n].face = f2;
+            halfedges[et].face = f2;
+
+            // 更新 Face 的代表半边
+            faces[f1].he = e;
+            faces[f2].he = e_p;
+        }
+
+        // 边分裂
+        // 注意：只能分裂内部边（twin != -1），边界边不可分裂
+        int splitEdge(int he) {
+            int e = he;
+
+            // 边界检查：边界边没有对面三角形，无法分裂
+            if (halfedges[e].twin == -1) {
+                assert(false && "splitEdge: cannot split a boundary edge");
+                return -1;
+            }
+
+            int e_n = halfedges[e].next;
+            int e_p = halfedges[e_n].next;
+
+            int et = halfedges[e].twin;
+            int et_n = halfedges[et].next;
+            int et_p = halfedges[et_n].next;
+
+            int f1 = halfedges[e].face;
+            int f2 = halfedges[et].face;
+
+            int A = halfedges[e_p].vert;
+            int B = halfedges[e_n].vert;
+            int D = halfedges[e].vert;
+            int C = halfedges[et_p].vert;
+
+            // 新增顶点 M
+            Vec3 posM = (verts[B].pos + verts[D].pos) * 0.5;
+            int M = (int)verts.size();
+            verts.emplace_back(posM);
+
+            // 新增两个面
+            int f3 = (int)faces.size();
+            faces.emplace_back();
+            int f4 = (int)faces.size();
+            faces.emplace_back();
+
+            // 新增六条边
+            int base = (int)halfedges.size();
+            halfedges.resize(base + 6);
+            int h0 = base + 0;   // D→M
+            int h1 = base + 1;   // M→A
+            int h2 = base + 2;   // A→M
+            int h3 = base + 3;   // M→B
+            int h4 = base + 4;   // M→C
+            int h5 = base + 5;   // C→M
+
+            // 修改复用的半边
+            // e  原来 D→B，现在变成 B→M
+            halfedges[e].vert = B;
+            // et 原来 B→D，现在变成 M→D
+            halfedges[et].vert = M;
+
+            // 设置新半边的 vert
+            halfedges[h0].vert = D;
+            halfedges[h1].vert = M;
+            halfedges[h2].vert = A;
+            halfedges[h3].vert = M;
+            halfedges[h4].vert = M;
+            halfedges[h5].vert = C;
+
+            // 设置 next
+            // △ADM（f1）：e_p(A→D) → h0(D→M) → h1(M→A) → e_p
+            halfedges[e_p].next = h0;
+            halfedges[h0].next = h1;
+            halfedges[h1].next = e_p;
+
+            // △AMB（f3）：h2(A→M) → h3(M→B) → e_n(B→A) → h2
+            halfedges[h2].next = h3;
+            halfedges[h3].next = e_n;
+            halfedges[e_n].next = h2;
+
+            // △BMC（f2）：e(B→M) → h4(M→C) → et_p(C→B) → e
+            halfedges[e].next = h4;
+            halfedges[h4].next = et_p;
+            halfedges[et_p].next = e;
+
+            // △MDC（f4）：et(M→D) → et_n(D→C) → h5(C→M) → et
+            halfedges[et].next = et_n;
+            halfedges[et_n].next = h5;
+            halfedges[h5].next = et;
+
+            // 设置 face
+            halfedges[e_p].face = f1;
+            halfedges[h0].face = f1;
+            halfedges[h1].face = f1;
+
+            halfedges[h2].face = f3;
+            halfedges[h3].face = f3;
+            halfedges[e_n].face = f3;
+
+            halfedges[e].face = f2;
+            halfedges[h4].face = f2;
+            halfedges[et_p].face = f2;
+
+            halfedges[et].face = f4;
+            halfedges[et_n].face = f4;
+            halfedges[h5].face = f4;
+
+            // 设置 twin
+            halfedges[h0].twin = et;   // D→M ↔ M→D(et)
+            halfedges[et].twin = h0;
+            halfedges[h1].twin = h2;       // M→A ↔ A→M
+            halfedges[h2].twin = h1;
+            halfedges[h3].twin = e;        // M→B ↔ B→M(e)
+            halfedges[e].twin = h3;
+            halfedges[h4].twin = h5;       // M→C ↔ C→M
+            halfedges[h5].twin = h4;
+
+            // 更新 Face 代表半边
+            faces[f1].he = e_p;
+            faces[f2].he = e;
+            faces[f3].he = h2;
+            faces[f4].he = et;
+
+            // 更新顶点 M 的出边
+            verts[M].outHE = h3;
+
+            // 更新顶点 B 和 D 的出边（原来可能指向 e 或 et）
+            // D 的出边若原来指向 e（现在 e 起点变成 B），需要更新
+            if (verts[D].outHE == e)
+                verts[D].outHE = h0;    // h0 = D→M，从 D 出发
+
+            // B 的出边若原来指向 et（现在 et 起点变成 M），需要更新
+            if (verts[B].outHE == et)
+                verts[B].outHE = e_n;   // e_n = B→A，从 B 出发
+
+            return M;
+        }
+
+        // 顶点 v 的所有出边
+        std::vector<int> outEdge(int v) const {
+            std::vector<int> result;
+            int start = verts[v].outHE;
+            if (start == -1) return result;
+
+            int rightmost = findRightmostHE(v);
+
+            if (rightmost == -1) {
+                // 内部顶点：逆时针 (CCW) 遍历
+                int cur = start;
+                do
+                {
+                    result.push_back(cur);
+                    int prev = halfedges[halfedges[cur].next].next;
+                    cur = halfedges[prev].twin;
+                } while (cur != start);
+            }
+            else
+            {
+                // 边界顶点：从最右侧边界出边逆时针 (CCW) 遍历
+                int cur = rightmost;
+                while (true)
+                {
+                    result.push_back(cur);
+                    int prev = halfedges[halfedges[cur].next].next;
+                    int tw = halfedges[prev].twin;
+                    if (tw == -1) break;
+                    cur = tw;
+                }
+            }
+            return result;
+        }
+
+        // 边折叠
+        // 将半边 he 的起点 u 合并到终点 v，并标记相关的两个面和边为失效 (-1)
+        // 返回：合并后的顶点索引 (v)；如果因为流形条件限制无法折叠，则返回 -1
+        int collapseEdge(int he) {
+            int e = he;
+            int u = halfedges[e].vert;
+            int e_n = halfedges[e].next;
+            int v = halfedges[e_n].vert;
+
+            // Step 1: Link Condition 检查，防止生成非流形网格
+            std::vector<int> Nu = neighborVerts(u);
+            std::vector<int> Nv = neighborVerts(v);
+            int shareCount = 0;
+            for (int nu : Nu) {
+                for (int nv : Nv) {
+                    if (nu == nv) shareCount++;
+                }
+            }
+            // 如果是内部边，期望恰好有 2 个公共点；如果是边界边，期望 1 个
+            int expectedShared = (halfedges[e].twin != -1) ? 2 : 1;
+            if (shareCount != expectedShared) return -1; // 违反 Link Condition，强行折叠会导致非流形，拒绝操作
+
+            // Step 2: 提前收集拓扑上下文 (在修改任何指针之前)
+            int e_p = halfedges[e_n].next;
+            int f_top = halfedges[e].face;
+            int w1 = halfedges[e_p].vert;
+            int tw_n = halfedges[e_n].twin;
+            int tw_p = halfedges[e_p].twin;
+
+            int et = halfedges[e].twin;
+            int f_bot = -1, et_n = -1, et_p = -1, w2 = -1, tw_tn = -1, tw_tp = -1;
+            if (et != -1) {
+                f_bot = halfedges[et].face;
+                et_n = halfedges[et].next;
+                et_p = halfedges[et_n].next;
+                w2 = halfedges[et_p].vert;
+                tw_tn = halfedges[et_n].twin;
+                tw_tp = halfedges[et_p].twin;
+            }
+
+            // 记录所有即将被删除的半边
+            std::vector<int> deleted_hes = { e, e_n, e_p };
+            if (et != -1) {
+                deleted_hes.push_back(et);
+                deleted_hes.push_back(et_n);
+                deleted_hes.push_back(et_p);
+            }
+
+            // 提取受影响顶点的原始出边集合 (用于后续筛选安全出边)
+            std::vector<int> u_out_edges = outEdges(u);
+            std::vector<int> v_out_edges = outEdges(v);
+            std::vector<int> w1_out_edges = outEdges(w1);
+            std::vector<int> w2_out_edges;
+            if (w2 != -1) w2_out_edges = outEdges(w2);
+
+            // 辅助 Lambda：从出边列表中挑选一条不会被删除的边
+            auto getValidOutHE = [&](const std::vector<int>& out_list) -> int {
+                for (int h : out_list) {
+                    if (std::find(deleted_hes.begin(), deleted_hes.end(), h) == deleted_hes.end()) {
+                        return h;
+                    }
+                }
+                return -1;
+            };
+
+            // Step 3: 更新几何位置 (采用中点策略)
+            verts[v].pos = (verts[u].pos + verts[v].pos) * 0.5;
+
+            // Step 4: 转移顶点 u 的扇面
+            // 所有以 u 为起点的幸存半边，现在起点改为 v
+            for (int h : u_out_edges) {
+                if (std::find(deleted_hes.begin(), deleted_hes.end(), h) == deleted_hes.end()) {
+                    halfedges[h].vert = v;
+                }
+            }
+
+            // Step 5: 缝合撕裂的拓扑 (连接外部的 Twin)
+            // 缝合顶面 (f_top) 留下的缺口
+            if (tw_n != -1) halfedges[tw_n].twin = tw_p;
+            if (tw_p != -1) halfedges[tw_p].twin = tw_n;
+
+            // 缝合底面 (f_bot) 留下的缺口
+            if (et != -1) {
+                if (tw_tn != -1) halfedges[tw_tn].twin = tw_tp;
+                if (tw_tp != -1) halfedges[tw_tp].twin = tw_tn;
+            }
+
+            // Step 6: 修复受影响顶点的 outHE 指针
+            // 优先从 v 原本的出边中找；如果没有，说明 v 被完全包围，从 u 转移过来的边中找
+            verts[v].outHE = getValidOutHE(v_out_edges);
+            if (verts[v].outHE == -1) {
+                verts[v].outHE = getValidOutHE(u_out_edges);
+            }
+
+            verts[w1].outHE = getValidOutHE(w1_out_edges);
+            if (w2 != -1) verts[w2].outHE = getValidOutHE(w2_out_edges);
+
+            // Step 7: 废弃元素标记 (Lazy Deletion)
+            verts[u].outHE = -1; // 顶点 u 被逻辑删除
+            faces[f_top].he = -1;
+            if (f_bot != -1) faces[f_bot].he = -1;
+
+            for (int h : deleted_hes) {
+                halfedges[h].face = -1;
+                halfedges[h].next = -1;
+                halfedges[h].twin = -1;
+                halfedges[h].vert = -1;
+            }
+
+            return v;
+        }
+
+        // 找到并返回所有边界半边的索引
+        std::vector<int> findBoundaryEdges() const {
+            std::vector<int> result;
+
+            for (int i = 0; i < (int)halfedges.size(); ++i) {
+                if (halfedges[i].twin == -1) {
+                    result.push_back(i);
+                }
+            }
+
+            return result;
+        }
     };
 
 
@@ -833,15 +1172,18 @@ namespace Geo {
     // 从一个起始三角形出发，每步朝 P 所在方向跳到相邻三角形
     // 适合 Delaunay 插入时使用（通常从上次插入的三角形出发）
     // 需要 HalfEdgeMesh 提供拓扑信息
+    //
+    // 注意：verts 是 2D 顶点数组，mesh 内部的 Vertex.pos 是 3D 的，
+    //       这里用外部 verts 做 2D 几何判断以保持精度
     inline int locatePoint_walk(
         const std::vector<Vec2>& verts,
         const HalfEdgeMesh& mesh,
-        const std::vector<std::array<int, 3>>& tris,
         const Vec2& P,
         int startFace = 0)
     {
+        int nFaces = (int)mesh.faces.size();
         int f = startFace;
-        int maxIter = (int)tris.size() + 10;   // 防止死循环
+        int maxIter = nFaces + 10;   // 防止死循环
 
         for (int iter = 0; iter < maxIter; iter++) {
             auto [v0, v1, v2] = mesh.faceVerts(f);
@@ -890,7 +1232,7 @@ namespace Geo {
         // -----------------------------------------------------------------------
         Triangle2D createSuperTriangle(const std::vector<Vec2>& points) {
 
-            float x_min = points[0].x; float x_max = points[0].x; float y_min = points[0].y; float y_max = points[0].y;
+            real x_min = points[0].x; real x_max = points[0].x; real y_min = points[0].y; real y_max = points[0].y;
 
             for (const auto& p : points) {
                 if (p.x < x_min) x_min = p.x;
@@ -899,16 +1241,16 @@ namespace Geo {
                 if (p.y > y_max) y_max = p.y;
             }
 
-            float x_mid = (x_min + x_max) * 0.5f;
-            float y_mid = (y_min + y_max) * 0.5f;
+            real x_mid = (x_min + x_max) * 0.5;
+            real y_mid = (y_min + y_max) * 0.5;
 
-            float dx = x_max - x_min;
-            float dy = y_max - y_min;
-            float delta = (dx + dy + 1.0f) * 10.0f;
+            real dx = x_max - x_min;
+            real dy = y_max - y_min;
+            real delta = (dx + dy + 1.0) * 10.0;
 
-            Vec2 v0 = { x_mid - 2.0f * delta, y_mid - delta };
-            Vec2 v1 = { x_mid + 2.0f * delta, y_mid - delta };
-            Vec2 v2 = { x_mid,                y_mid + 2.0f * delta };
+            Vec2 v0 = { x_mid - 2.0 * delta, y_mid - delta };
+            Vec2 v1 = { x_mid + 2.0 * delta, y_mid - delta };
+            Vec2 v2 = { x_mid,                y_mid + 2.0 * delta };
 
             return Triangle2D(v0, v1, v2);
         }
@@ -947,27 +1289,33 @@ namespace Geo {
         // -----------------------------------------------------------------------
         // 找到 cavity 的边界边
         // 边界边定义：只属于一个 cavity 三角形的边（另一侧不在 cavity 内）
-        // 返回：每条边界边用 {顶点索引A, 顶点索引B} 表示
+        // 返回：每条边界边用 {顶点索引A, 顶点索引B} 表示，保留原始方向（逆时针）
+        //
+        // 实现方式：
+        //   用归一化的 (min,max) 键来统计出现次数（判断是否边界）
+        //   同时用有向的 (va,vb) 键来记录原始方向（用于构建新三角形）
         // -----------------------------------------------------------------------
         std::vector<std::array<int, 2>> findBoundaryEdges(const std::vector<int>& cavity) {
 
             // 统计 cavity 内每条边出现的次数
             // 出现1次 = 边界边；出现2次 = 内部边（两侧都在 cavity 内，需删除）
             std::map<std::array<int, 2>, int> edgeCount;
+            // 保留有向边，用于提取原始方向
+            std::map<std::array<int, 2>, std::array<int, 2>> edgeDirected;
 
             for (int fi : cavity) {
                 for (int i = 0; i < 3; ++i) {
                     int va = tris[fi][i];
                     int vb = tris[fi][(i + 1) % 3];
-                    // 统一边的方向（小索引在前），避免 {a,b} 和 {b,a} 被当作不同边
-                    std::array<int, 2> edge = { std::min(va, vb), std::max(va, vb) };
-                    edgeCount[edge]++;
+                    std::array<int, 2> key = { std::min(va, vb), std::max(va, vb) };
+                    edgeCount[key]++;
+                    edgeDirected[key] = { va, vb };  // 后写入的覆盖前面的，但边界边只出现1次所以没问题
                 }
             }
 
             std::vector<std::array<int, 2>> boundary;
-            for (auto& [edge, cnt] : edgeCount) {
-                if (cnt == 1) boundary.push_back(edge);
+            for (auto& [key, cnt] : edgeCount) {
+                if (cnt == 1) boundary.push_back(edgeDirected[key]);
             }
 
             return boundary;
@@ -983,26 +1331,36 @@ namespace Geo {
 
             if (cavity.empty()) return;
 
-            // Step 2：找到空腔的边界边
+            // Step 2：找到空腔的边界边（保留了原始逆时针方向）
             std::vector<std::array<int, 2>> boundary = findBoundaryEdges(cavity);
 
-            // Step 3：删除空腔中的三角形（从后往前删，避免索引失效）
+            // Step 3：删除空腔中的三角形
+            // 使用 swap-with-last 技巧，O(1) 删除每个三角形，避免 vector::erase 的 O(n) 搬移
             std::sort(cavity.begin(), cavity.end(), std::greater<int>());
             for (int fi : cavity) {
-                tris.erase(tris.begin() + fi);
+                tris[fi] = tris.back();
+                tris.pop_back();
             }
 
             // Step 4：加入新顶点
             int newV = (int)verts.size();
             verts.push_back(P);
 
-            // Step 5：用每条边界边和新点构成新三角形（保证逆时针）
+            // Step 5：用每条边界边和新点构成新三角形
+            // 边界边的方向是 cavity 三角形的逆时针方向，
+            // 从 cavity 外侧看，边界边方向需要反转，因此新三角形是 vb→va→newV
             for (auto& edge : boundary) {
                 int va = edge[0], vb = edge[1];
-                // 检查 va→vb→newV 是否逆时针，若不是则交换 va vb
-                float cross = Geo::cross2D(verts[va], verts[vb], verts[newV]);
-                if (cross < 0) std::swap(va, vb);
-                tris.push_back({ va, vb, newV });
+                // 从 cavity 外部看，边界边的外侧朝向是 vb→va
+                // 新三角形 (vb, va, newV) 应该是逆时针的
+                // 用叉积验证，如果不是则交换
+                real c = Geo::cross2D(verts[vb], verts[va], verts[newV]);
+                if (c > EPS) {
+                    tris.push_back({ vb, va, newV });
+                }
+                else {
+                    tris.push_back({ va, vb, newV });
+                }
             }
         }
 
@@ -1066,15 +1424,15 @@ namespace Geo {
         fv << "x,y\n";
         for (const auto& v : verts) {
             fv << v.x << "," << v.y << "\n";
-            fv.close();
-
-            std::ofstream ft(prefix + "_tris.csv");
-            ft << "i0, i1, i2\n";
-            for (const auto& t : tris) {
-                ft << t[0] << "," << t[1] << "," << t[2] << "\n";
-            }
-            ft.close();
         }
+        fv.close();
+
+        std::ofstream ft(prefix + "_tris.csv");
+        ft << "i0,i1,i2\n";
+        for (const auto& t : tris)
+            ft << t[0] << "," << t[1] << "," << t[2] << "\n";
+        ft.close();
+
     }
 
     // 导出为 SVG（直接在浏览器打开即可查看）
@@ -1089,21 +1447,21 @@ namespace Geo {
         if (verts.empty()) return;
 
         // 计算包围盒
-        float xmin = verts[0].x, xmax = verts[0].x;
-        float ymin = verts[0].y, ymax = verts[0].y;
+        real xmin = verts[0].x, xmax = verts[0].x;
+        real ymin = verts[0].y, ymax = verts[0].y;
         for (const auto& v : verts) {
             if (v.x < xmin) xmin = v.x;
             if (v.x > xmax) xmax = v.x;
             if (v.y < ymin) ymin = v.y;
             if (v.y > ymax) ymax = v.y;
         }
-        const float margin = svgSize * 0.08f;
-        const float drawSize = svgSize - 2.0f * margin;
-        float range = std::max(xmax - xmin, ymax - ymin);
-        if (range < 1e-9f) range = 1.0f;
+        const real margin = svgSize * 0.08;
+        const real drawSize = svgSize - 2.0 * margin;
+        real range = std::max(xmax - xmin, ymax - ymin);
+        if (range < 1e-9) range = 1.0;
         // 世界坐标 → SVG 坐标（y 轴翻转）
-        auto sx = [&](float x) { return margin + (x - xmin) / range * drawSize; };
-        auto sy = [&](float y) { return margin + (ymax - y) / range * drawSize; };
+        auto sx = [&](real x) { return margin + (x - xmin) / range * drawSize; };
+        auto sy = [&](real y) { return margin + (ymax - y) / range * drawSize; };
 
         std::ofstream f(filename);
         f << std::fixed;
@@ -1124,9 +1482,9 @@ namespace Geo {
             << " fill=" << Q << "none" << Q
             << " opacity=" << Q << "0.7" << Q << ">\n";
         for (const auto& t : tris) {
-            float ax = sx(verts[t[0]].x), ay = sy(verts[t[0]].y);
-            float bx = sx(verts[t[1]].x), by = sy(verts[t[1]].y);
-            float cx = sx(verts[t[2]].x), cy = sy(verts[t[2]].y);
+            real ax = sx(verts[t[0]].x), ay = sy(verts[t[0]].y);
+            real bx = sx(verts[t[1]].x), by = sy(verts[t[1]].y);
+            real cx = sx(verts[t[2]].x), cy = sy(verts[t[2]].y);
             f << "<polygon points=" << Q
                 << ax << "," << ay << " "
                 << bx << "," << by << " "
@@ -1180,5 +1538,7 @@ namespace Geo {
         bool showIndex = false, int svgSize = 600) {
         exportSVG(mesh.verts, mesh.tris, filename, showIndex, svgSize);
     }
+
+
 
 }   // namespace Geo
