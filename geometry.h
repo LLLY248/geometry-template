@@ -20,6 +20,9 @@
 //  2026-03  Part 5:   HalfEdge 半边数据结构
 //  2026-03  Part 6:   点定位
 //  2026-03  Part 7:   Delaunay 三角剖分（Bowyer-Watson 完整实现）
+//  2026-03  Part 4.5: 网格拓扑检验 (isManifold)
+//  2026-03  Part 4.6: 几何退化检测 (Degeneracy Check)
+//  2026-03  Part 4.7: 自相交检测 (Self-Intersection)
 // =============================================================================
 
 
@@ -478,6 +481,31 @@ namespace Geo {
     //  重要原则：所有几何运算用边向量 (B-A), (C-A)，不用裸顶点坐标
     // =============================================================================
 
+    // 辅助结构：三维轴向包围盒 (Axis-Aligned Bounding Box)
+    struct AABB3D
+    {
+        Vec3 min_pt, max_pt;
+
+        AABB3D() = default;
+        AABB3D(const Vec3& a, const Vec3& b, const Vec3& c) {
+            min_pt.x = std::min({ a.x, b.x, c.x });
+            min_pt.y = std::min({ a.y, b.y, c.y });
+            min_pt.z = std::min({ a.z, b.z, c.z });
+
+            max_pt.x = std::max({ a.x, b.x, c.x });
+            max_pt.y = std::max({ a.y, b.y, c.y });
+            max_pt.z = std::max({ a.z, b.z, c.z });
+        }
+
+        // 检查两个包围盒是否发生空间重叠
+        bool intersect(const AABB3D& other) const {
+            if (max_pt.x < other.min_pt.x || min_pt.x > other.max_pt.x) return false;
+            if (max_pt.y < other.min_pt.y || min_pt.y > other.max_pt.y) return false;
+            if (max_pt.z < other.min_pt.z || min_pt.z > other.max_pt.z) return false;
+            return true;
+        }
+    };
+
     struct Triangle3D {
         Vec3 a, b, c;   // 三个顶点，建议逆时针朝向正面
 
@@ -581,6 +609,288 @@ namespace Geo {
         }
     };
 
+    // =============================================================================
+    //  Part 4.5 : 网格拓扑检验 (Mesh Validation)
+    //
+    //  在构建 HalfEdgeMesh 等高级拓扑结构前，必须确保网格是流形 (Manifold)。
+    //  包含：检测非流形边、检测非流形顶点。
+    // =============================================================================
+
+    // 检查Polygon Soup 是否是合法的流形网格
+    inline bool isManifold(const std::vector<std::array<int, 3>>& tris) {
+        if (tris.empty()) return true;
+
+        // Step 0: 获取最大顶点索引，用于动态分配邻接表内存
+        int max_v = -1;
+        for (const auto& t : tris) {
+            max_v = std::max({ max_v, t[0], t[1], t[2] });
+        }
+        if (max_v == -1) return true;
+
+        // Step 1: 检测非流形边 (Non-manifold Edges)
+        // 规则：任何一条无向边，最多只能被 2 个面共享
+        std::vector<std::array<int, 2>> edges;
+        edges.reserve(tris.size() * 3);
+
+        for (const auto& t : tris) {
+            for (int i = 0; i < 3; ++i) {
+                int u = t[i];
+                int v = t[(i + 1) % 3];
+                edges.push_back({ std::min(u, v), std::max(u, v) });
+            }
+        }
+
+        // 排序，将相同的边挨在一起
+        std::sort(edges.begin(), edges.end());
+
+        int n_edges = (int)edges.size();
+        for (int i = 0; i < n_edges;) {
+            int count = 1;
+            while (i + count < n_edges && edges[i][0] == edges[i + count][0]
+                                       && edges[i][1] == edges[i + count][1])
+            {
+                count++;
+            }
+
+            if (count > 2) {
+                return false;
+            }
+            i += count;
+        }
+
+        // Step 2: 检测非流形顶点 (Non-manifold Vertices)
+        // 规则：围绕任何一个顶点的所有面，必须能通过共享边连成一个单一的连通块
+        std::vector<std::vector<int>> vert_to_faces(max_v + 1);
+        for (int i = 0; i < (int)tris.size(); ++i) {
+            for (int j = 0; j < 3; ++j) {
+                vert_to_faces[tris[i][j]].push_back(i);
+            }
+        }
+
+        for (int v = 0; v <= max_v; ++v) {
+            const auto& faces = vert_to_faces[v];
+            int n_faces = (int)faces.size();
+
+            if (n_faces <= 1) continue;
+
+            std::vector<bool> visited(n_faces, false);
+            std::vector<int> queue;
+            queue.reserve(n_faces);
+
+            visited[0] = true;
+            queue.push_back(0);
+            int head = 0;
+            int visited_count = 1;
+
+            while (head < (int)queue.size()) {
+                int curr_face_idx = queue[head++];
+                int curr_face = faces[curr_face_idx];
+
+                // 扫描周围其他未访问的面，看是否与 curr_face 相邻
+                for (int i = 0; i < n_faces; ++i) {
+                    if (visited[i]) continue;
+                    int neighbor_face = faces[i];
+
+                    // 检查判定：curr_face 和 neighbor_face 是否共享了除 v 以外的另一个顶点？
+                    // 如果共享了，说明它们在 v 旁边紧紧挨着（共享了一条包含 v 的边）
+                    int shared_other_v = 0;
+                    for (int j = 0; j < 3; ++j) {
+                        int v1 = tris[curr_face][j];
+                        if (v1 == v) continue;
+
+                        for (int k = 0; k < 3; ++k) {
+                            int v2 = tris[neighbor_face][k];
+                            if (v2 == v) continue;
+
+                            if (v1 == v2) {
+                                shared_other_v++;
+                            }
+                        }
+                    }
+
+                    // 找到了相连的面，标记为访问并推入队列
+                    if (shared_other_v >= 1) {
+                        visited[i] = true;
+                        queue.push_back(i);
+                        visited_count++;
+                    }
+                }
+            }
+            // BFS 扩散结束。如果最终访问的面数量小于这个顶点连接的总面数，
+            // 说明在顶点 v 处存在互不相连的"沙漏"结构面簇。
+            if (visited_count < n_faces) {
+                return false; // 触发非流形顶点
+            }
+        }
+
+        return true;
+    }
+
+    // =============================================================================
+    //  Part 4.6 : 几何退化检测 (Geometric Degeneracy Validation)
+    // =============================================================================
+
+    // 找出所有退化的三角形（面积极小，或存在极大/极小内角）
+    // 输入：3D 顶点数组 verts，三角形索引数组 tris
+    // 返回：退化三角形的索引列表
+    inline std::vector<int> findDegenerateTriangles(
+        const std::vector<Vec3>& verts,
+        const std::vector<std::array<int, 3>>& tris,
+        real minArea = 1e-7,       // 最小允许面积
+        real minAngleDeg = 1.0,    // 最小允许内角（度）—— 拦截“针状 (Needle)”
+        real maxAngleDeg = 179.0   // 最大允许内角（度）—— 拦截“帽状 (Cap)”
+    ) {
+        std::vector<int> degenerate_indices;
+
+        real minCos = std::cos(maxAngleDeg * PI / 180.0);
+        real maxCos = std::cos(minAngleDeg * PI / 180.0);
+
+        for (int i = 0; i < (int)tris.size(); ++i) {
+            const Vec3& A = verts[tris[i][0]];
+            const Vec3& B = verts[tris[i][1]];
+            const Vec3& C = verts[tris[i][2]];
+
+            Vec3 ab = B - A;
+            Vec3 ac = C - A;
+            Vec3 bc = C - B;
+
+            // 拦截 1：面积检测 (Area Check)
+            // 用叉积求面积：0.5 * ||AB x AC||
+            real area = ab.cross(ac).length() * 0.5;
+            if (area < minArea) {
+                degenerate_indices.push_back(i);
+                continue;   // 已经是退化面，直接跳过后续角度计算
+            }
+
+            // 拦截 2：角度检测 (Angle Check / Aspect Ratio Check)
+            real len_ab = ab.length();
+            real len_ac = ac.length();
+            real len_bc = bc.length();
+
+            // 防御性编程：理论上面积检测已经拦截了极短边，但防止浮点截断导致除以 0
+            if (len_ab < EPS || len_ac < EPS || len_bc < EPS) {
+                degenerate_indices.push_back(i);
+                continue;
+            }
+
+            // 算出从每个顶点出发的单位方向向量
+            Vec3 dir_ab = ab / len_ab;
+            Vec3 dir_ac = ac / len_ac;
+            Vec3 dir_ba = ab * -1.0 / len_ab;
+            Vec3 dir_bc = bc / len_bc;
+            Vec3 dir_ca = ac * -1.0 / len_ac;
+            Vec3 dir_cb = bc * -1.0 / len_bc;
+
+            // 用向量点积求三个内角的余弦值 (Dot Product)
+            // cos(theta) = Dir1 · Dir2
+            real cosA = dir_ab.dot(dir_ac);
+            real cosB = dir_ba.dot(dir_bc);
+            real cosC = dir_ca.dot(dir_cb);
+
+            // 判决逻辑：
+            // 如果 cos 值 > maxCos (接近 1)，说明夹角极其尖锐 (小于 minAngleDeg)
+            // 如果 cos 值 < minCos (接近 -1)，说明夹角极其平缓 (大于 maxAngleDeg)
+            if (cosA > maxCos || cosA < minCos ||
+                cosB > maxCos || cosB < minCos ||
+                cosC > maxCos || cosC < minCos) {
+                degenerate_indices.push_back(i);
+            }
+        }
+
+        return degenerate_indices;
+    }
+
+    // =============================================================================
+    //  Part 4.7 : 自相交检测 (Self-Intersection Detection)
+    // =============================================================================
+
+    // 全局自相交检测函数
+    // 输入：3D 顶点数组 verts，三角形索引数组 tris
+    // 返回：所有发生互相穿透的三角形索引对 (Tri_A, Tri_B)
+    inline std::vector<std::pair<int, int>> findSelfIntersections(
+        const std::vector<Vec3>& verts,
+        const std::vector<std::array<int, 3>>& tris
+    ) {
+        std::vector<std::pair<int, int>> intersecting_pairs;
+        int n_tris = (int)tris.size();
+
+        // 准备阶段：预先计算所有面片的 AABB 和 Triangle3D 对象 (空间换时间)
+        // 避免在 O(N^2) 的双重循环中反复进行内存分配和重复计算
+        std::vector<AABB3D> aabbs;
+        std::vector<Triangle3D> tri_objs;
+        aabbs.reserve(n_tris);
+        tri_objs.reserve(n_tris);
+
+        for (int i = 0; i < n_tris; ++i) {
+            const Vec3& A = verts[tris[i][0]];
+            const Vec3& B = verts[tris[i][1]];
+            const Vec3& C = verts[tris[i][2]];
+            aabbs.emplace_back(A, B, C);
+            tri_objs.emplace_back(A, B, C);
+        }
+
+        // 核心检测阶段：双重循环遍历所有可能的三角形对
+        for (int i = 0; i < n_tris; ++i) {
+            for (int j = i + 1; j < n_tris; ++j) {
+                // 拦截 1：拓扑邻接过滤 (Adjacency Filter)
+                // 如果两个三角形共享了 1 个、2 个或 3 个顶点，说明它们在拓扑上连在一起。
+                // 它们在边界处的物理接触是合法的，不属于“自相交穿透”。
+                int shared_verts = 0;
+                for (int vi = 0; vi < 3; ++vi) {
+                    for (int vj = 0; vj < 3; ++vj) {
+                        if (tris[i][vi] == tris[j][vj]) {
+                            shared_verts++;
+                        }
+                    }
+                }
+                if (shared_verts > 0) continue;
+
+                // 拦截 2：空间粗筛 (AABB Pre-rejection)
+                if (!aabbs[i].intersect(aabbs[j])) continue;
+
+                // 拦截 3：精确几何求交 (Edge-Piercing Test)
+                const Triangle3D& T1 = tri_objs[i];
+                const Triangle3D& T2 = tri_objs[j];
+                bool is_intersect = false;
+
+                // 辅助 Lambda：测试线段 p0->p1 是否刺穿了三角形 T
+                auto segmentPiercesTri = [](const Vec3& p0, const Vec3& p1, const Triangle3D& T) {
+                    real t, u, v;
+                    Vec3 dir = p1 - p0;
+
+                    // 调用在 Part 4 中已经实现的 Möller–Trumbore 射线求交算法
+                    if (T.rayIntersect(p0, dir, t, u, v)) {
+                        // 射线求交返回的是 t，线段的范围是 t 属于 (0, 1)
+                        // 使用 EPS 缩紧边界，防止极端贴合导致的误判
+                        if (t > EPS && t < 1.0 - EPS) {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+
+                // 测试 T1 的三条边是否刺穿 T2
+                if (segmentPiercesTri(T1.a, T1.b, T2) ||
+                    segmentPiercesTri(T1.b, T1.c, T2) ||
+                    segmentPiercesTri(T1.c, T1.a, T2)) {
+                    is_intersect = true;
+                }
+                // 测试 T2 的三条边是否刺穿 T1
+                else if (segmentPiercesTri(T2.a, T2.b, T1) ||
+                    segmentPiercesTri(T2.b, T2.c, T1) ||
+                    segmentPiercesTri(T2.c, T2.a, T1)) {
+                    is_intersect = true;
+                }
+
+                if (is_intersect) {
+                    intersecting_pairs.push_back({ i, j });
+                }
+            }
+        }
+
+        return intersecting_pairs;
+    }
+
 
     // =============================================================================
     //  Part 5 : HalfEdge — 半边数据结构
@@ -649,6 +959,10 @@ namespace Geo {
 
         void build(const std::vector<Vec3>& positions,
             const std::vector<std::array<int, 3>>& tris) {
+
+            // 防御性拦截：确保输入网格拓扑合法，避免半边结构指针错乱崩溃
+            assert(Geo::isManifold(tris) && "HalfEdgeMesh requires manifold topology!");
+
             int nv = (int)positions.size();
             int nf = (int)tris.size();
 
@@ -683,18 +997,37 @@ namespace Geo {
             }
 
             // 建立 twin 关系：边 (a→b) 的 twin 是 (b→a)
-            std::map<std::pair<int, int>, int> edgeMap;
+            // 优化：使用 std::vector 替代 std::map 以提升 CPU 缓存命中率和百万级面片加载速度
+            struct DirectedEdge {
+                int v0, v1;
+                int he_idx;
+                bool operator<(const DirectedEdge& other) const {
+                    if (v0 != other.v0) return v0 < other.v0;
+                    return v1 < other.v1;
+                }
+            };
+
+            std::vector<DirectedEdge> edgeList;
+            edgeList.reserve(halfedges.size());
             for (int he = 0; he < (int)halfedges.size(); ++he) {
                 int v0 = halfedges[he].vert;
                 int v1 = halfedges[halfedges[he].next].vert;
-                edgeMap[{v0, v1}] = he;
+                edgeList.push_back({ v0, v1, he });
             }
+
+            // 排序，使起点和终点相同的边在内存中连续排列
+            std::sort(edgeList.begin(), edgeList.end());
+
             for (int he = 0; he < (int)halfedges.size(); ++he) {
                 int v0 = halfedges[he].vert;
                 int v1 = halfedges[halfedges[he].next].vert;
-                auto it = edgeMap.find({ v1, v0 });
-                if (it != edgeMap.end()) {
-                    halfedges[he].twin = it->second;
+
+                // 使用二分查找寻找对向边 (v1 → v0)
+                DirectedEdge target = { v1, v0, -1 };
+                auto it = std::lower_bound(edgeList.begin(), edgeList.end(), target);
+
+                if (it != edgeList.end() && it->v0 == v1 && it->v1 == v0) {
+                    halfedges[he].twin = it->he_idx;
                 }
             }
         }
@@ -1139,6 +1472,46 @@ namespace Geo {
 
             return result;
         }
+
+        // 提取所有边界环 (Boundary Loops)
+        // 返回：包含多个环的二维数组，每个环是一个按连通顺序排列的顶点索引集合
+        std::vector<std::vector<int>> findBoundaryLoops() const {
+            std::vector<std::vector<int>> loops;
+            int n_he = (int)halfedges.size();
+
+            std::vector<bool> visited(n_he, false);
+
+            for (int i = 0; i < n_he; ++i) {
+                // 寻找一个合格的起点：
+                // 1. 必须是边界半边 (twin == -1)
+                // 2. 还没有被归入任何已知的环 (!visited[i])
+                // 3. 确保不是被惰性删除的废弃半边 (vert != -1)
+                if (halfedges[i].twin == -1 && !visited[i] && halfedges[i].vert != -1) {
+                    std::vector<int> current_loop;
+                    int cur = i;
+                    do
+                    {
+                        visited[cur] = true;
+                        current_loop.push_back(halfedges[cur].vert);
+
+                        // 【核心逻辑】：寻找从当前半边终点出发的“下一条边界半边”
+                        int he_n = halfedges[cur].next;
+                        while (halfedges[he_n].twin != -1)
+                        {
+                            he_n = halfedges[halfedges[he_n].twin].next;
+                        }
+
+                        cur = he_n;
+                    } while (cur != i);
+
+                    loops.push_back(current_loop);
+                }
+            }
+
+            return loops;
+        }
+
+
     };
 
 
