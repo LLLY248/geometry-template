@@ -727,6 +727,83 @@ namespace Geo {
     }
 
     // =============================================================================
+    // 附加预处理：修复非流形边 (Naive Non-Manifold Edge Fixing)
+    // 策略：对于共享同一条边的 >2 个面，保留前 2 个面，其余面通过复制顶点暴力撕开。
+    // 注意：此函数必须在 HalfEdgeMesh::build 之前调用！
+    // =============================================================================
+    inline void fixNonManifoldEdges(
+        std::vector<Vec3>& verts,
+        std::vector<std::array<int, 3>>& tris) {
+        if (tris.empty()) return;
+
+        // 辅助结构：记录无向边与它所属的面
+        struct EdgeFace
+        {
+            int u, v;  // 保证 u < v
+            int face_idx;
+            bool operator<(const EdgeFace& other) const {
+                if (u != other.u) return u < other.u;
+                if (v != other.v) return v < other.v;
+                return face_idx < other.face_idx;s
+            }
+        };
+
+        std::vector<EdgeFace> edge_list;
+        edge_list.reserve(tris.size() * 3);
+
+        for (int i = 0; (int)tris.size(); ++i) {
+            for (int j = 0; j < 3; ++j) {
+                int u = tris[i][j];
+                int v = tris[i][(j + 1) % 3];
+                edge_list.push_back({ std::min(u, v), std::max(u, v), i });
+            }
+        }
+
+        // 排序：让共享同一条边 (u, v) 的记录在内存中连续排列
+        std::sort(edge_list.begin(), edge_list.end());
+
+        int n_edges = (int)edge_list.size();
+        for (int i = 0; i < n_edges;) {
+            int count = 1;
+            // 统计当前无向边 (u, v) 被多少个面共享
+            while (i + count < n_edges &&
+                edge_list[i].u == edge_list[i + count].u &&
+                edge_list[i].v == edge_list[i + count].v) 
+            {
+                count++;
+            }
+
+            // 命中非流形边 (超过 2 个面共享)
+            if (count > 2) {
+                int u = edge_list[i].u;
+                int v = edge_list[i].v;
+
+                // 核心手术：保留前 2 个面不动 (它们构成了合法的流形边界/内部边)
+                // 从第 3 个面开始，给它们分配全新的“克隆顶点”，强行把拓扑撕裂
+                for (int k = 2; k < count; ++k) {
+                    int bad_face_idx = edge_list[i + k].face_idx;
+
+                    // 1. 在顶点数组末尾克隆 u 和 v 的物理坐标
+                    int u_clone = (int)verts.size();
+                    verts.push_back(verts[u]);
+
+                    int v_clone = (int)verts.size();
+                    verts.push_back(verts[v]);
+
+                    // 2. 覆盖坏面中的旧索引
+                    for (int j = 0; j < 3; ++j) {
+                        if (tris[bad_face_idx][j] == u) tris[bad_face_idx][j] = u_clone;
+                        if (tris[bad_face_idx][j] == v) tris[bad_face_idx][j] = v_clone;
+                    }
+                }
+            }
+
+            // 步进到下一条不同的边
+            i += count;
+        }
+    }
+
+    // =============================================================================
     //  Part 4.6 : 几何退化检测 (Geometric Degeneracy Validation)
     // =============================================================================
 
@@ -1511,6 +1588,353 @@ namespace Geo {
             return loops;
         }
 
+        // 简单孔洞填充：中心点扇形三角化 (Centroid Fan)
+        // 输入：一个由 findBoundaryLoops 提取出来的边界环 (顶点索引数组)
+        // 返回：新增的中心点 (Centroid) 的顶点索引
+        int fillHoleSimple(const std::vector<int>& loop) {
+            if (loop.size() < 3) return -1; // 至少需要 3 个点才能构成多边形孔洞
+
+            int n = (int)loop.size();
+
+            // Step 1: 计算孔洞边界的几何中心 (Centroid)
+            Vec3 centroid(0, 0, 0);
+            for (int v : loop) {
+                centroid += verts[v].pos;
+            }
+            centroid = ceil / (real)n;
+
+            // Step 2: 将中心点作为新顶点添加到网格中
+            int C = (int)verts.size();
+            verts.emplace_back(centroid);
+
+            // Step 3: 预先分配所需的面和半边内存
+            // 环上有 n 条边，将生成 n 个新三角形面和 3n 条新半边
+            int f_start = (int)faces.size();
+            int he_start = (int)halfedges.size();
+            faces.resize(f_start + n);
+            halfedges.resize(he_start + 3 * n);
+
+            // 预处理：定位环上原始的边界半边
+            // 为了将新生成的三角形完美缝合到原来的孔洞边缘，必须找到那些 twin == -1 的半边
+            std::vector<int> ori_boundary_hes(n, -1);
+            for (int i = 0; i < n; ++i) {
+                int v_curr = loop[i];
+                int v_next = loop[(i + 1) % n];
+
+                // 遍历 v_curr 的所有出边，找到指向 v_next 且处于外边界的半边
+                auto out_hes = outEdge(v_curr);
+                for (int he : out_hes){
+                    if (halfedges[he].twin == -1 && halfedges[halfedges[he].next].vert == v_next) {
+                        ori_boundary_hes[i] = he;
+                        break;
+                    }
+                }
+                assert(orig_boundary_hes[i] != -1 && "fillHole: Non-boundary edge found in loop!");
+            }
+
+            // Step 4: 逐个构建围绕中心点的扇形三角形
+            // 注意：原边界半边是 v_curr -> v_next，为了保持法线一致，
+            // 新三角形的边界边必须反向，即 v_next -> v_curr。
+            // 因此新三角形的顶点顺序为 (v_next, v_curr, C)
+            for (int i = 0; i < n; ++i) {
+                int v_curr = loop[i];
+                int v_next = loop[(i + 1) % n];
+
+                int f_idx = f_start + 1;
+                // 分配新三角形的三个半边索引
+                int he_base = he_start + i * 3 + 0;  // 贴合原边界：v_next -> v_curr
+                int he_right = he_start + i * 3 + 1; // 辐射状向内：v_curr -> C
+                int he_left = he_start + i * 3 + 2;  // 辐射状向外：C -> v_next
+
+                faces[f_idx].he = he_base;
+
+                // 1. he_base 属性设置
+                halfedges[he_base].vert = v_next;
+                halfedges[he_base].next = he_right;
+                halfedges[he_base].face = f_idx;
+                halfedges[he_base].twin = ori_boundary_hes[i];
+                halfedges[ori_boundary_hes[i]].twin = he_base;
+
+                // 2. he_right 属性设置
+                halfedges[he_right].vert = v_curr;
+                halfedges[he_right].next = he_left;
+                halfedges[he_right].face = f_idx;
+                // twin 关系稍后在 Step 5 统一连接
+
+                // 3. he_left 属性设置
+                halfedges[he_left].vert = C;
+                halfedges[he_left].next = he_base;
+                halfedges[he_left].face = f_idx;
+                // twin 关系稍后在 Step 5 统一连接
+
+                // 为新诞生的中心点分配任意一条出边
+                if (i == 0) verts[C].outHE = he_left;
+            }
+
+            // Step 5: 缝合相邻新面之间的辐射状内部边
+            for (int i = 0; i < n; ++i) {
+                int prev_i = (i - 1 + n) % n;
+
+                // 当前面 f_i 连向中心点的半边 (v_curr -> C)
+                int he_right = he_start + i * 3 + 1;
+                // 上一个面 f_{i-1} 从中心点出来的半边 (C -> v_curr)
+                int he_left_prev = he_start + prev_i * 3 + 2;
+
+                // 互相注册为孪生边，将扇形内部彻底缝合
+                halfedges[he_right].twin = he_left_prev;
+                halfedges[he_left_prev].twin = he_right;
+            }
+
+            return C;
+        }
+
+        // 高级孔洞填充：基于 Delaunay 三角剖分 (Delaunay Hole Filling)
+        // 输入：一个由 findBoundaryLoops 提取出来的边界环 (顶点索引数组)
+        void fillHoleDelaunay(const std::vector<int>& loop) {
+            int n = (int)loop.size();
+            if (n < 3) return;
+
+            // Step 1: 三维到二维的降维投影
+            // 1.1 使用 Newell 方法鲁棒地计算多边形环的法向量
+            Vec3 normal(0, 0, 0);
+            Vec3 centroid(0, 0, 0);
+            for (int i = 0; i < n; ++i) {
+                const Vec3& p0 = verts[loop[i]].pos;
+                const Vec3& p1 = verts[loop[(i + 1) % n]].pos;
+                normal.x += (p0.y - p1.y) * (p0.z + p1.z);
+                normal.y += (p0.z - p1.z) * (p0.x + p1.x);
+                normal.z += (p0.x - p1.x) * (p0.y + p1.y);
+                centroid += p0;
+            }
+            normal = normal.normalized();
+            centroid = centroid / (real)n;
+
+            // 1.2 构建局部 2D 坐标系的 U 和 V 轴
+            Vec3 u_aixs, v_aixs;
+            if (std::abs(normal.x) > 0.9) u_aixs = Vec3(0, 1, 0).cross(normal).normalized();
+            else
+            {
+                u_axis = Vec3(1, 0, 0).cross(normal).normalized();
+            }
+            v_axis = normal.cross(u_axis).normalized();
+
+            // 1.3 提取顶点并投影到 2D 平面
+            std::vector<Vec2> loop2d;
+            loop2d.reserve(n);
+            for (int v_idx : loop) {
+                Vec3 p = verts[v_idx].pos - centroid;
+                loop2d.push_back({ p.dot(u_aixs), p.dot(v_aixs) });
+            }
+
+            // Step 2: 二维 Delaunay 剖分与凹多边形过滤
+            // 2.1 调用已有的 Delaunay 模板生成三角网格
+            Geo::DelaunayMesh d_mesh;
+            d_mesh.build(loop2d);
+
+            // 2.2 过滤掉生成在孔洞外部的“废弃三角形” (处理凹孔洞)
+            std::vector<std::array<int, 3>> new_tris;
+            for (const auto& t : d_mesh.tris) {
+                Vec2 p0 = loop2d[t[0]];
+                Vec2 p1 = loop2d[t[1]];
+                Vec2 p2 = loop2d[t[2]];
+                Vec2 center = (p0 + p1 + p2) * (1.0 / 3.0);
+
+                // 如果三角形重心在孔洞多边形内部，则是合法的修补面
+                if (Geo::inPolygon(loop2d, center)) {
+                    new_tris.push_back({ loop[t[0]], loop[t[1]], loop[t[2]] });
+                }
+            }
+
+            // 2.3 【极其关键】法线朝向校正
+            // 原边界半边的方向是 loop[0] -> loop[1]。
+            // 为了能无缝缝合，新三角形贴着边界的边必须是反向的 (loop[1] -> loop[0])。
+            // 如果发现新三角形包含了正向边，说明 2D 映射导致了法线翻转，需要集体反转顶点顺序。
+            int v0 = loop[0];
+            int v1 = loop[1];
+            bool needs_flip = false;
+            for (const auto& t : new_tris) {
+                if ((t[0] == v0 && t[1] == v1) || (t[1] == v0 && t[2] == v1) || (t[2] == v0 && t[0] == v1)) {
+                    needs_flip = true;
+                    break;
+                }
+            }
+            if (needs_flip) {
+                for (auto& t : new_tris) std::swap(t[0], t[1]); // 交换前两个顶点，反转三角形绕序
+            }
+
+            // Step 3: 半边拓扑缝合 (Topology Stitching)
+            // 3.1 收集原孔洞的边界半边 (这些半边的 twin 目前都是 -1)
+            std::vector<int> boundary_hes;
+            for (int i = 0; i < n; ++i) {
+                int curr = loop[i];
+                int next = loop[(i + 1) % n];
+                for (int he : outEdge(curr)) {
+                    if (halfedges[he].twin == -1 && halfedges[halfedges[he].next].vert == next) {
+                        boundary_hes.push_back(he);
+                        break;
+                    }
+                }
+            }
+
+            // 3.2 扩容面和半边数组
+            int f_start = (int)faces.size();
+            int he_start = (int)halfedges.size();
+            int n_new_f = (int)new_tris.size();
+            faces.resize(f_start + n_new_f);
+            halfedges.resize(he_start + 3 * n_new_f);
+
+            // 局部辅助结构，用于利用排序进行极速 twin 匹配
+            struct LocalEdge
+            {
+                int v0, v1, he_idx;
+                bool operator<(const LocalEdge& o) const {
+                    if (v0 != o.v0) return v0 < o.v0;
+                    return v1 < o.v1;
+                }
+            };
+            std::vector<LocalEdge> stitch_edges;
+            stitch_edges.reserve(boundary_hes.size() + 3 * n_new_f);
+
+            // 3.3 把原边界半边放入匹配池
+            for (int he : boundary_hes) {
+                stitch_edges.push_back({ halfedges[he].vert, halfedges[halfedges[he].next].vert, he });
+            }
+
+            // 3.4 注入新生成的 Delaunay 表面
+            for (int i = 0; i < n_new_f; ++i) {
+                int f_idx = f_start + i;
+                faces[f_idx].he = he_start + i * 3;
+
+                for (int j = 0; j < 3; ++j) {
+                    int he = he_start + i * 3 + j;
+                    int curr_v = new_tris[i][j];
+                    int next_v = new_tris[i][(j + 1) % 3];
+
+                    halfedges[he].vert = curr_v;
+                    halfedges[he].next = he_start + i * 3 + (j + 1) % 3;
+                    halfedges[he].face = f_idx;
+                    halfedges[he].twin = -1; // 默认初始化
+
+                    stitch_edges.push_back({ curr_v, next_v, he });
+                    verts[curr_v].outHE = he; // 保底刷新出边
+                }
+            }
+
+            // 3.5 局部孪生边对齐 (Local Twin Resolving)
+            // 这一步将同时完成：原边界与新面孔的咬合，以及新面孔内部半边的相互缝合
+            std::sort(stitch_edges.begin(), stitch_edges.end());
+            for (const auto& edge : stitch_edges) {
+                if (halfedges[edge.he_idx].twin != -1) continue; // 原边界可能已经被上一轮匹配过了
+
+                LocalEdge target = { edge.v1, edge.v0, -1 };
+                auto it = std::lower_bound(stitch_edges.begin(), stitch_edges.end(), target);
+
+                if (it != stitch_edges.end() && it->v0 == edge.v1 && it->v1 == edge.v0) {
+                    // 互相注册为孪生边
+                    halfedges[edge.he_idx].twin = it->he_idx;
+                    halfedges[it->he_idx].twin = edge.he_idx;
+                }
+            }
+        }
+
+        // 修复退化三角形 (Mesh Healing)
+        // 策略：极小面积 -> 最短边折叠 (Collapse) ; 极狭长/扁平 -> 最长边翻转 (Flip)
+        void fixDegenerateTriangles(
+            real minArea = 1e-7,       // 最小允许面积
+            real minAngleDeg = 1.0,    // 最小允许内角（度）
+            real maxAngleDeg = 179.0   // 最大允许内角（度）
+        ) {
+            bool changed = true;
+            int max_passes = 10; // 防死循环安全锁：最多进行 10 轮全局拓扑修正
+
+            real minCos = std::cos(maxAngleDeg * Geo::PI / 180.0);
+            real maxCos = std::cos(minAngleDeg * Geo::PI / 180.0);
+
+            while (changed && max_passes-- > 0)
+            {
+                changed = false;
+
+                // Pass 1: 斩杀极小面积三角形 (Edge Collapse)
+                for (int f = 0; f < (int)faces.size(); ++f) {
+                    if (faces[f].he == -1) continue; // 过滤废弃面
+
+                    int he0 = faces[f].he;
+                    int he1 = halfedges[he0].next;
+                    int he2 = halfedges[he1].next;
+
+                    Vec3 p0 = verts[halfedges[he0].vert].pos;
+                    Vec3 p1 = verts[halfedges[he1].vert].pos;
+                    Vec3 p2 = verts[halfedges[he2].vert].pos;
+
+                    // 计算面积
+                    real area = (p1 - p0).cross(p2 - p0).length() * 0.5;
+
+                    if (area < minArea) {
+                        // 寻找最短边进行折叠，将几何形状改变降到最低
+                        real l0 = (p1 - p0).length2(); // he0 的长度平方
+                        real l1 = (p2 - p1).length2(); // he1
+                        real l2 = (p0 - p2).length2(); // he2
+
+                        int target_he = he0;
+                        if (l1 < l0 && l1 < l2) target_he = he1;
+                        if (l2 < l0 && l2 < l1) target_he = he2;
+
+                        // 尝试执行安全折叠（自带 Link Condition 流形保护）
+                        if (collapseEdge(targe_he) != -1) {
+                            changed = true;
+                            break; // 拓扑已变更，打断当前 for 循环，重新从头扫描
+                        }
+                    }
+                }
+
+                // Pass 2: 救援极狭长/扁平三角形 (Edge Flip)
+                for (int f = 0; f < (int)faces.size(); ++f) {
+                    if (Face[f].he == -1) continue;
+
+                    int he0 = faces[f].he;
+                    int he1 = halfedges[he0].next;
+                    int he2 = halfedges[he1].next;
+
+                    Vec3 p0 = verts[halfedges[he0].vert].pos;
+                    Vec3 p1 = verts[halfedges[he1].vert].pos;
+                    Vec3 p2 = verts[halfedges[he2].vert].pos;
+
+                    real len0 = (p1 - p0).length();
+                    real len1 = (p2 - p1).length();
+                    real len2 = (p0 - p2).length();
+
+                    // 防御性：经过 Pass 1 理论上不会有了，但防止除零错误
+                    if (len0 < Geo::EPS || len1 < Geo::EPS || len2 < Geo::EPS) continue;
+
+                    Vec3 v01 = (p1 - p0) / len0;
+                    Vec3 v12 = (p2 - p1) / len1;
+                    Vec3 v20 = (p0 - p2) / len2;
+
+                    // 通过点积计算内角余弦
+                    real cos0 = -v20.dot(v01); // p0 处的角
+                    real cos1 = -v01.dot(v12); // p1 处的角
+                    real cos2 = -v12.dot(v20); // p2 处的角
+
+                    // 命中退化角度（极锐角或极钝角）
+                    if (cos0 > maxCos || cos0 < minCos ||
+                        cos1 > maxCos || cos1 < minCos ||
+                        cos2 > maxCos || cos2 < minCos) {
+
+                        // 寻找最长边进行翻转 (打断扁平三角形的脊梁骨)
+                        int target_he = he0;
+                        if (len1 > len0 && len1 > len2) target_he = he1;
+                        if (len2 > len0 && len2 > len1) target_he = he2;
+
+                        // 只有内部边 (非边界边) 才能翻转
+                        if (halfedges[target_he].twin != -1) {
+                            flipEdge(target_he);
+                            changed = true;
+                            break; // 拓扑已变更，重新从头扫描
+                        }
+                    }
+                }
+            }
+        }
 
     };
 
@@ -1912,6 +2336,307 @@ namespace Geo {
         exportSVG(mesh.verts, mesh.tris, filename, showIndex, svgSize);
     }
 
+    // =============================================================================
+    //  Part 9 : 网格质量报告 (Mesh Quality Report)
+    //
+    //  对当前 HalfEdgeMesh 进行全方位的拓扑与几何诊断，包括欧拉示性数、亏格、
+    //  表面积、包围盒、退化缺陷等。
+    // =============================================================================
 
+    struct MeshReport {
+        // --- 1. 基础统计 (Basic Stats) ---
+        int num_vertices = 0;
+        int num_faces = 0;
+        int num_halfedges = 0;
+        int num_edges = 0;              // 内部边 + 边界边
+
+        // --- 2. 拓扑属性 (Topology) ---
+        int num_connected_components = 0; // 连通分量数 (C)
+        int num_boundary_loops = 0;       // 边界环数量 (B)
+        int num_boundary_edges = 0;       // 位于边界上的边数
+        int euler_characteristic = 0;     // 欧拉示性数 (χ)
+        int genus = 0;                    // 亏格 (g)
+        bool is_closed = false;           // 是否水密封闭
+
+        // --- 3. 几何尺寸 (Geometry) ---
+        AABB3D bounding_box;
+        real total_area = 0.0;
+
+        real min_edge_length = std::numeric_limits<real>::max();
+        real max_edge_length = 0.0;
+        real avg_edge_length = 0.0;
+
+        real min_face_area = std::numeric_limits<real>::max();
+        real max_face_area = 0.0;
+        real avg_face_area = 0.0;
+
+        // --- 4. 顶点特征 (Vertex Features) ---
+        int min_valence = std::numeric_limits<int>::max();
+        int max_valence = 0;
+        real avg_valence = 0.0;
+        int num_isolated_vertices = 0;    // 被惰性删除或完全孤立的废弃点
+
+        // --- 5. 缺陷统计 (Defects) ---
+        int num_degenerate_faces = 0;     // 退化三角形数量
+        int num_self_intersections = 0;   // 自相交对数 (-1 表示未执行该高耗时检测)
+
+        // 打印精美的诊断报告
+        void print() const {
+            std::cout << "\n================= Mesh Quality Report =================\n";
+            std::cout << "[ 基本统计 / Basic Stats ]\n";
+            std::cout << "  Vertices       : " << num_vertices << "  (Deleted/Isolated: " << num_isolated_vertices << ")\n";
+            std::cout << "  Faces          : " << num_faces << "\n";
+            std::cout << "  Half-Edges     : " << num_halfedges << "\n";
+            std::cout << "  Unique Edges   : " << num_edges << "\n";
+
+            std::cout << "\n[ 拓扑属性 / Topology ]\n";
+            std::cout << "  Closed Mesh    : " << (is_closed ? "Yes (Watertight)" : "No (Has Holes)") << "\n";
+            std::cout << "  Components (C) : " << num_connected_components << "\n";
+            std::cout << "  Boundary Loops : " << num_boundary_loops << " loops (" << num_boundary_edges << " edges)\n";
+            std::cout << "  Euler Char (x) : " << euler_characteristic << "  [ x = V - E + F ]\n";
+            std::cout << "  Genus (g)      : " << genus << "  [ 2g = 2C - B - x ]\n";
+
+            std::cout << "\n[ 几何尺寸 / Geometry ]\n";
+            std::cout << "  Bounding Box   : [" << bounding_box.min_pt.x << ", " << bounding_box.min_pt.y << ", " << bounding_box.min_pt.z << "] to\n"
+                << "                   [" << bounding_box.max_pt.x << ", " << bounding_box.max_pt.y << ", " << bounding_box.max_pt.z << "]\n";
+            std::cout << "  Dimensions     : " << (bounding_box.max_pt.x - bounding_box.min_pt.x) << " x "
+                << (bounding_box.max_pt.y - bounding_box.min_pt.y) << " x "
+                << (bounding_box.max_pt.z - bounding_box.min_pt.z) << "\n";
+            std::cout << "  Total Area     : " << total_area << "\n";
+            if (num_edges > 0) {
+                std::cout << "  Edge Length    : Min " << min_edge_length << " | Max " << max_edge_length << " | Avg " << avg_edge_length << "\n";
+            }
+            if (num_faces > 0) {
+                std::cout << "  Face Area      : Min " << min_face_area << " | Max " << max_face_area << " | Avg " << avg_face_area << "\n";
+            }
+
+            std::cout << "\n[ 网格质量 / Quality & Defects ]\n";
+            if (num_vertices > 0) {
+                std::cout << "  Valence        : Min " << min_valence << " | Max " << max_valence << " | Avg " << avg_valence << "\n";
+            }
+            std::cout << "  Degenerate     : " << num_degenerate_faces << " faces\n";
+            if (num_self_intersections == -1) {
+                std::cout << "  Self-Intersect : [ Skipped ] (Set flag to true to evaluate)\n";
+            }
+            else {
+                std::cout << "  Self-Intersect : " << num_self_intersections << " intersecting pairs\n";
+            }
+            std::cout << "=======================================================\n";
+        }
+    };
+
+    // 分析 HalfEdgeMesh 并生成报告
+    // 参数 checkSelfIntersect：是否开启极其耗时的空间自相交检测
+    inline MeshReport analyze(const HalfEdgeMesh& mesh, bool checkSelfIntersect = false) {
+        MeshReport report;
+
+        // 初始包围盒反向极限设定
+        report.bounding_box.min_pt = { std::numeric_limits<real>::max(), std::numeric_limits<real>::max(), std::numeric_limits<real>::max() };
+        report.bounding_box.max_pt = { std::numeric_limits<real>::lowest(), std::numeric_limits<real>::lowest(), std::numeric_limits<real>::lowest() };
+
+        // 1. 扫描半边与边长统计
+        real sum_edge_length = 0.0;
+        for (int i = 0; i < (int)mesh.halfedges.size(); ++i) {
+            const auto& he = mesh.halfedges[i];
+            if (he.vert == -1 || he.face == -1) continue; // 过滤被边折叠惰性删除的幽灵元素
+
+            report.num_halfedges++;
+
+            // 为避免一条无向边被计算两次，只在 (没有孪生边) 或 (当前索引 < 孪生边索引) 时才统计
+            if (he.twin == -1 || i < he.twin) {
+                report.num_edges++;
+                int v0 = he.vert;
+                int v1 = mesh.halfedges[he.next].vert;
+                real len = (mesh.verts[v0].pos - mesh.verts[v1].pos).length();
+
+                report.min_edge_length = std::min(report.min_edge_length, len);
+                report.max_edge_length = std::max(report.max_edge_length, len);
+                sum_edge_length += len;
+            }
+
+            if (he.twin == -1) {
+                report.num_boundary_edges++;
+            }
+        }
+        if (report.num_edges > 0) report.avg_edge_length = sum_edge_length / report.num_edges;
+
+        // 2. 扫描面与面积统计
+        real sum_face_area = 0.0;
+        for (int i = 0; i < (int)mesh.faces.size(); ++i) {
+            if (mesh.faces[i].he == -1) continue; // 过滤废弃面
+
+            report.num_faces++;
+            auto [v0, v1, v2] = mesh.faceVerts(i);
+            Triangle3D t(mesh.verts[v0].pos, mesh.verts[v1].pos, mesh.verts[v2].pos);
+            real area = t.area();
+
+            report.min_face_area = std::min(report.min_face_area, area);
+            report.max_face_area = std::max(report.max_face_area, area);
+            sum_face_area += area;
+        }
+        report.total_area = sum_face_area;
+        if (report.num_faces > 0) report.avg_face_area = sum_face_area / report.num_faces;
+
+        // 3. 扫描顶点、度数 (Valence) 与包围盒
+        int sum_valence = 0;
+        for (int i = 0; i < (int)mesh.verts.size(); ++i) {
+            const auto& v = mesh.verts[i];
+            if (v.outHE == -1) {
+                report.num_isolated_vertices++;
+                continue;
+            }
+
+            report.num_vertices++;
+
+            // 更新 AABB 包围盒
+            report.bounding_box.min_pt.x = std::min(report.bounding_box.min_pt.x, v.pos.x);
+            report.bounding_box.min_pt.y = std::min(report.bounding_box.min_pt.y, v.pos.y);
+            report.bounding_box.min_pt.z = std::min(report.bounding_box.min_pt.z, v.pos.z);
+            report.bounding_box.max_pt.x = std::max(report.bounding_box.max_pt.x, v.pos.x);
+            report.bounding_box.max_pt.y = std::max(report.bounding_box.max_pt.y, v.pos.y);
+            report.bounding_box.max_pt.z = std::max(report.bounding_box.max_pt.z, v.pos.z);
+
+            // 统计顶点的一环出边数量 (度)
+            int valence = (int)mesh.outEdge(i).size();
+            report.min_valence = std::min(report.min_valence, valence);
+            report.max_valence = std::max(report.max_valence, valence);
+            sum_valence += valence;
+        }
+        if (report.num_vertices > 0) report.avg_valence = (real)sum_valence / report.num_vertices;
+
+        // 如果网格为空，修复默认显示值
+        if (report.num_vertices == 0) {
+            report.bounding_box.min_pt = { 0,0,0 }; report.bounding_box.max_pt = { 0,0,0 };
+            report.min_valence = 0; report.min_edge_length = 0; report.min_face_area = 0;
+        }
+
+        // 4. 计算连通分量 (BFS)
+        std::vector<bool> visited_verts(mesh.verts.size(), false);
+        for (int i = 0; i < (int)mesh.verts.size(); ++i) {
+            if (mesh.verts[i].outHE == -1 || visited_verts[i]) continue;
+
+            report.num_connected_components++;
+
+            // 局部 BFS 蔓延
+            std::vector<int> queue;
+            queue.push_back(i);
+            visited_verts[i] = true;
+
+            int head = 0;
+            while (head < (int)queue.size()) {
+                int curr = queue[head++];
+                auto neighbors = mesh.neighborVerts(curr);
+                for (int n : neighbors) {
+                    if (!visited_verts[n]) {
+                        visited_verts[n] = true;
+                        queue.push_back(n);
+                    }
+                }
+            }
+        }
+
+        // 5. 拓扑代数计算 (Euler-Poincaré Formula)
+        report.num_boundary_loops = (int)mesh.findBoundaryLoops().size();
+        report.is_closed = (report.num_boundary_loops == 0);
+        report.euler_characteristic = report.num_vertices - report.num_edges + report.num_faces;
+        // 广义欧拉公式：V - E + F = 2(C - g) - B
+        // 因此 2g = 2C - B - χ
+        report.genus = (2 * report.num_connected_components - report.num_boundary_loops - report.euler_characteristic) / 2;
+
+        // 6. 调用退化与自相交缺陷检测
+        // 为了复用之前的代码，我们重新提取出纯净的 verts 和 tris 数组 (剔除幽灵元素)
+        std::vector<std::array<int, 3>> active_tris;
+        active_tris.reserve(report.num_faces);
+        for (int i = 0; i < (int)mesh.faces.size(); ++i) {
+            if (mesh.faces[i].he != -1) {
+                active_tris.push_back(mesh.faceVerts(i));
+            }
+        }
+
+        // 注意：原版 findDegenerateTriangles 接受的是完整的 verts 数组和映射，
+        // 我们只需剥离出 Vec3 即可，索引在 faceVerts 中依然是指向 mesh.verts 的原绝对索引。
+        std::vector<Vec3> raw_verts;
+        raw_verts.reserve(mesh.verts.size());
+        for (const auto& v : mesh.verts) raw_verts.push_back(v.pos);
+
+        auto degenerates = Geo::findDegenerateTriangles(raw_verts, active_tris);
+        report.num_degenerate_faces = (int)degenerates.size();
+
+        if (checkSelfIntersect) {
+            auto self_ints = Geo::findSelfIntersections(raw_verts, active_tris);
+            report.num_self_intersections = (int)self_ints.size();
+        }
+        else {
+            report.num_self_intersections = -1; // 标记为跳过
+        }
+
+        return report;
+    }
+
+    // =============================================================================
+    //  Part 10 : 工业级自动修复流水线 (Industrial Auto-Healing Pipeline)
+    //
+    //  一键式修复脏网格数据，输出高质量的水密流形网格。
+    // =============================================================================
+
+    // 自动网格修复函数
+    // 传入原始的顶点和面索引，修复后将结果装载进 out_mesh 中
+    inline void repairMesh(
+        std::vector<Vec3>& raw_verts,
+        std::vector<std::array<int, 3>>& raw_tris,
+        HalfEdgeMesh& out_mesh)
+    {
+        std::cout << "\n[Mesh Repair Pipeline] 启动自动修复流程..." << std::endl;
+
+        // ---------------------------------------------------------
+        // Phase 1: 预处理与隔离 (Pre-processing)
+        // ---------------------------------------------------------
+        std::cout << "  -> 1. 扫描与切除结构性毒瘤 (修复非流形边)..." << std::endl;
+        // 注意：此函数是你刚才实现的，直接操作 raw_verts 和 raw_tris
+        fixNonManifoldEdges(raw_verts, raw_tris);
+
+        // ---------------------------------------------------------
+        // Phase 2: 拓扑构建 (Topological Build)
+        // ---------------------------------------------------------
+        std::cout << "  -> 2. 构建高维半边拓扑数据结构..." << std::endl;
+        // 有了第一步的保证，这里的 assert(isManifold) 就能安全通过了
+        out_mesh.build(raw_verts, raw_tris);
+
+        // ---------------------------------------------------------
+        // Phase 3: 拓扑自愈 (Topological Healing)
+        // ---------------------------------------------------------
+        std::cout << "  -> 3. 诊断拓扑断裂并执行缝合手术 (填充孔洞)..." << std::endl;
+        auto boundary_loops = out_mesh.findBoundaryLoops();
+        int holes_filled = 0;
+
+        for (const auto& loop : boundary_loops) {
+            // 智能策略路由：
+            // 对于极小孔洞 (<= 5 个点)，Delaunay 投影大材小用且容易因点太少退化，直接用扇形填充
+            if (loop.size() <= 5) {
+                out_mesh.fillHoleSimple(loop);
+            }
+            // 对于复杂大孔洞，使用降维 Delaunay 保证高质量网格分布
+            else {
+                out_mesh.fillHoleDelaunay(loop);
+            }
+            holes_filled++;
+        }
+        std::cout << "        [完成] 共缝合孔洞数量: " << holes_filled << std::endl;
+
+        // ---------------------------------------------------------
+        // Phase 4: 几何自愈 (Geometric Healing)
+        // ---------------------------------------------------------
+        std::cout << "  -> 4. 清理几何碎屑与极值畸变 (修复退化三角形)..." << std::endl;
+        // 这一步不仅清理原模型的退化，更清理了 Phase 3 填洞时可能引入的狭长面
+        out_mesh.fixDegenerateTriangles();
+
+        // ---------------------------------------------------------
+        // Phase 5: 最终质检 (Final QA)
+        // ---------------------------------------------------------
+        bool is_watertight = out_mesh.findBoundaryLoops().empty();
+        std::cout << "[Mesh Repair Pipeline] 修复流水线执行完毕！\n";
+        std::cout << "  => 水密性验证 (Watertight) : " << (is_watertight ? "PASS" : "FAIL (遗留复杂拓扑)") << "\n";
+        std::cout << "=======================================================\n";
+    }
 
 }   // namespace Geo
